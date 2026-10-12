@@ -465,15 +465,15 @@ std::pair<std::vector<array>, ParentsMap> compile_dfs(
       if (cache.find(id) != cache.end()) {
         return;
       }
-      for (int i = 0; i < a.inputs().size(); i++) {
-        auto& in = a.inputs()[i];
-        parents_map[in.id()].push_back({a, i});
-        for (auto& s : a.siblings()) {
-          parents_map[in.id()].push_back({s, i});
-        }
-        // Don't recurse on inputs (but add them to the tape for the purpose
-        // of future optimizations)
-        if (input_set.find(a.id()) == input_set.end()) {
+      // Don't recurse on inputs or record their parents (but add them to the
+      // tape for the purpose of future optimizations)
+      if (input_set.find(id) == input_set.end()) {
+        for (int i = 0; i < a.inputs().size(); i++) {
+          auto& in = a.inputs()[i];
+          parents_map[in.id()].push_back({a, i});
+          for (auto& s : a.siblings()) {
+            parents_map[in.id()].push_back({s, i});
+          }
           recurse(in);
         }
       }
@@ -1105,6 +1105,103 @@ std::vector<array> compile_replace(
     outputs.push_back(trace_to_real.at(o.id()));
   }
   return outputs;
+}
+
+LoopBodyTrace compile_loop_body(
+    const std::function<std::vector<array>(const std::vector<array>&)>& fun,
+    const std::vector<array>& input_specs) {
+  auto [trace_inputs, trace_outputs, extra] = compile_trace(
+      [&fun](const std::vector<array>& inputs) {
+        return ArraysAndExtra{fun(inputs), nullptr};
+      },
+      input_specs,
+      /* shapeless */ false);
+
+  std::unordered_set<std::uintptr_t> input_ids;
+  for (auto& in : trace_inputs) {
+    input_ids.insert(in.id());
+  }
+
+  // An array is loop-invariant when no path from it reaches a traced input
+  std::unordered_map<std::uintptr_t, bool> depends_cache;
+  std::function<bool(const array&)> depends_on_input =
+      [&](const array& a) -> bool {
+    if (input_ids.find(a.id()) != input_ids.end()) {
+      return true;
+    }
+    if (auto it = depends_cache.find(a.id()); it != depends_cache.end()) {
+      return it->second;
+    }
+    bool depends = false;
+    for (auto& in : a.inputs()) {
+      depends |= depends_on_input(in);
+    }
+    depends_cache[a.id()] = depends;
+    for (auto& s : a.siblings()) {
+      depends_cache[s.id()] = depends;
+    }
+    return depends;
+  };
+
+  // Hoist the largest invariant arrays the body reads
+  std::vector<array> consts;
+  std::unordered_set<std::uintptr_t> const_ids;
+  std::unordered_set<std::uintptr_t> visited;
+  std::function<void(const array&)> collect_consts = [&](const array& a) {
+    if (input_ids.find(a.id()) != input_ids.end() ||
+        !visited.insert(a.id()).second) {
+      return;
+    }
+    if (!depends_on_input(a)) {
+      if (const_ids.insert(a.id()).second) {
+        consts.push_back(a);
+      }
+      return;
+    }
+    for (auto& in : a.inputs()) {
+      collect_consts(in);
+    }
+  };
+  for (auto& o : trace_outputs) {
+    collect_consts(o);
+  }
+
+  // The tape stops at the constants. Placeholder originals disable the
+  // uncaptured-input check, because captures are hoisted.
+  auto all_inputs = trace_inputs;
+  all_inputs.insert(all_inputs.end(), consts.begin(), consts.end());
+  std::vector<array> unused_originals;
+  unused_originals.reserve(all_inputs.size());
+  for (size_t i = 0; i < all_inputs.size(); ++i) {
+    unused_originals.push_back(array(Shape{}, bool_, nullptr, {}));
+  }
+
+  auto [tape, parents_map] =
+      compile_dfs(all_inputs, trace_outputs, unused_originals);
+  compile_simplify(tape, parents_map, trace_outputs, /* passes */ 3);
+
+  // Simplify can merge or drop constants, so collect them again. The tape
+  // has one entry per multi-output node, so check the siblings too.
+  std::vector<array> live_consts;
+  std::unordered_set<std::uintptr_t> live_ids;
+  auto take_if_const = [&](const array& a) {
+    if (const_ids.find(a.id()) != const_ids.end() &&
+        live_ids.insert(a.id()).second) {
+      live_consts.push_back(a);
+    }
+  };
+  for (auto& a : tape) {
+    take_if_const(a);
+    for (auto& s : a.siblings()) {
+      take_if_const(s);
+    }
+  }
+
+  return {
+      std::move(trace_inputs),
+      std::move(live_consts),
+      std::move(tape),
+      std::move(trace_outputs)};
 }
 
 bool skip_compile() {

@@ -72,6 +72,19 @@ std::vector<array> compile_replace(
     const std::vector<array>& inputs,
     bool shapeless);
 
+struct LoopBodyTrace {
+  std::vector<array> inputs;
+  std::vector<array> consts;
+  std::vector<array> tape;
+  std::vector<array> outputs;
+};
+
+// Trace a loop body once on placeholder inputs shaped like `input_specs`,
+// hoisting captured loop-invariant arrays into explicit `consts`
+LoopBodyTrace compile_loop_body(
+    const std::function<std::vector<array>(const std::vector<array>&)>& fun,
+    const std::vector<array>& input_specs);
+
 void compile_validate_shapeless(const std::vector<array>& tape);
 
 } // namespace mlx::core::detail
