@@ -1,6 +1,7 @@
 // Copyright © 2023-2024 Apple Inc.
 
 #include <atomic>
+#include <cassert>
 #include <cstdlib>
 #include <map>
 #include <optional>
@@ -1202,6 +1203,52 @@ LoopBodyTrace compile_loop_body(
       std::move(live_consts),
       std::move(tape),
       std::move(trace_outputs)};
+}
+
+void compile_validate_loop_carry(const LoopBodyTrace& trace, int num_carry) {
+  assert(num_carry >= 0 && num_carry <= trace.inputs.size());
+  if (trace.outputs.size() < num_carry) {
+    std::ostringstream msg;
+    msg << "[scan] The loop body returned " << trace.outputs.size()
+        << " outputs but must return at least the " << num_carry
+        << " carry arrays.";
+    throw std::invalid_argument(msg.str());
+  }
+  for (int i = 0; i < num_carry; ++i) {
+    auto& in = trace.inputs[i];
+    auto& out = trace.outputs[i];
+    if (in.shape() != out.shape() || in.dtype() != out.dtype()) {
+      std::ostringstream msg;
+      msg << "[scan] Carry " << i << " changed from " << in.dtype()
+          << " with shape " << in.shape() << " to " << out.dtype()
+          << " with shape " << out.shape()
+          << " after one iteration. Carries must keep a fixed shape and dtype.";
+      throw std::invalid_argument(msg.str());
+    }
+  }
+}
+
+int compile_loop_length(const std::vector<array>& xs) {
+  if (xs.empty()) {
+    throw std::invalid_argument(
+        "[scan] At least one scanned input is required.");
+  }
+  for (auto& x : xs) {
+    if (x.ndim() == 0) {
+      throw std::invalid_argument(
+          "[scan] Scanned inputs must have at least one dimension.");
+    }
+  }
+  int length = xs[0].shape(0);
+  for (auto& x : xs) {
+    if (x.shape(0) != length) {
+      std::ostringstream msg;
+      msg << "[scan] Scanned inputs have mismatched lengths along axis 0: "
+          << length << " and " << x.shape(0) << ".";
+      throw std::invalid_argument(msg.str());
+    }
+  }
+  return length;
 }
 
 bool skip_compile() {

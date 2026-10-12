@@ -85,6 +85,13 @@ LoopBodyTrace compile_loop_body(
     const std::function<std::vector<array>(const std::vector<array>&)>& fun,
     const std::vector<array>& input_specs);
 
+// Check that the traced body returns one output per carry with an unchanged
+// shape and dtype
+void compile_validate_loop_carry(const LoopBodyTrace& trace, int num_carry);
+
+// Infer the loop length from the scanned inputs' shared leading axis
+int compile_loop_length(const std::vector<array>& xs);
+
 void compile_validate_shapeless(const std::vector<array>& tape);
 
 } // namespace mlx::core::detail
