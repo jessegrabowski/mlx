@@ -1,7 +1,9 @@
 // Copyright © 2026 Apple Inc.
 
-#include "mlx/loop.h"
+#include <unordered_set>
+
 #include "mlx/compile_impl.h"
+#include "mlx/loop.h"
 #include "mlx/primitives.h"
 
 namespace mlx::core {
@@ -28,6 +30,9 @@ std::pair<std::vector<array>, std::vector<array>> scan(
     const std::vector<array>& xs,
     StreamOrDevice s /* = {} */) {
   int length = detail::compile_loop_length(xs);
+  if (length == 0) {
+    throw std::invalid_argument("[scan] Zero-length scan is not supported.");
+  }
 
   auto input_specs = init;
   for (auto& x : xs) {
@@ -45,6 +50,26 @@ std::pair<std::vector<array>, std::vector<array>> scan(
   }
   int num_carry = init.size();
   detail::compile_validate_loop_carry(trace, num_carry);
+  if (trace.outputs.empty()) {
+    throw std::invalid_argument(
+        "[scan] The loop body must return at least one array.");
+  }
+
+  // The replay runs all body ops on the scan stream, so reject other streams
+  std::unordered_set<std::uintptr_t> leaf_ids;
+  for (auto& in : trace.inputs) {
+    leaf_ids.insert(in.id());
+  }
+  for (auto& c : trace.consts) {
+    leaf_ids.insert(c.id());
+  }
+  for (auto& node : trace.tape) {
+    if (leaf_ids.find(node.id()) == leaf_ids.end() &&
+        node.primitive().stream() != stream) {
+      throw std::invalid_argument(
+          "[scan] The loop body must run entirely on the scan's stream.");
+    }
+  }
 
   std::vector<Shape> shapes;
   std::vector<Dtype> dtypes;

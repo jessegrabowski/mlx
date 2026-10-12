@@ -484,6 +484,12 @@ struct PrimitiveFactory {
   }
 
   void save(Writer& os, const std::shared_ptr<Primitive>& p) {
+    // Scan has the serialized name of CumulativeScan, so reject it first
+    auto& primitive = *p;
+    if (typeid(primitive) == typeid(Scan)) {
+      throw std::invalid_argument(
+          "[export_function] Cannot serialize a function containing a scan.");
+    }
     serialize(os, p->stream());
     std::string name = p->name();
     name = name.substr(0, name.find(' '));
@@ -529,6 +535,11 @@ struct PrimitiveFactory {
 
   std::pair<std::string, std::vector<StateT>> extract_state(
       const std::shared_ptr<Primitive>& p) {
+    auto& primitive = *p;
+    if (typeid(primitive) == typeid(Scan)) {
+      throw std::invalid_argument(
+          "[export_function] Cannot serialize a function containing a scan.");
+    }
     std::string name = p->name();
     name = name.substr(0, name.find(' '));
     if (auto it = name_remap.find(name); it != name_remap.end()) {
