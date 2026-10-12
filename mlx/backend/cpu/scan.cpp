@@ -187,7 +187,8 @@ void scan_op(
           init);
     }
   } else {
-    throw std::runtime_error("Scan op supports only contiguous inputs");
+    throw std::runtime_error(
+        "CumulativeScan op supports only contiguous inputs");
   }
 }
 
@@ -206,26 +207,26 @@ U scan_init(const Dtype& dtype, bool maximum) {
 
 template <typename T, typename U>
 void scan_dispatch(
-    Scan::ReduceType rtype,
+    CumulativeScan::ReduceType rtype,
     const array& in,
     array& out,
     int axis,
     bool reverse,
     bool inclusive) {
   switch (rtype) {
-    case Scan::Sum: {
+    case CumulativeScan::Sum: {
       auto op = [](U y, T x) { return y + x; };
       auto init = static_cast<U>(0);
       scan_op<T, U>(in, out, axis, reverse, inclusive, op, init);
       break;
     }
-    case Scan::Prod: {
+    case CumulativeScan::Prod: {
       auto op = [](U y, T x) { return y * x; };
       auto init = static_cast<U>(1);
       scan_op<T, U>(in, out, axis, reverse, inclusive, op, init);
       break;
     }
-    case Scan::Min: {
+    case CumulativeScan::Min: {
       auto op = [](U y, T x) {
         if constexpr (is_floating_point_v<U>) {
           if (std::isnan(y) || std::isnan(static_cast<U>(x))) {
@@ -238,7 +239,7 @@ void scan_dispatch(
       scan_op<T, U>(in, out, axis, reverse, inclusive, op, init);
       break;
     }
-    case Scan::Max: {
+    case CumulativeScan::Max: {
       auto op = [](U y, T x) {
         if constexpr (is_floating_point_v<U>) {
           if (std::isnan(y) || std::isnan(static_cast<U>(x))) {
@@ -251,7 +252,7 @@ void scan_dispatch(
       scan_op<T, U>(in, out, axis, reverse, inclusive, op, init);
       break;
     }
-    case Scan::LogAddExp: {
+    case CumulativeScan::LogAddExp: {
       auto op = [](U a, T b) {
         return detail::LogAddExp{}(a, static_cast<U>(b));
       };
@@ -266,7 +267,7 @@ void scan_dispatch(
 
 } // namespace
 
-void Scan::eval_cpu(const std::vector<array>& inputs, array& out) {
+void CumulativeScan::eval_cpu(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 1);
 
   if (out.size() == 0) {
@@ -302,7 +303,7 @@ void Scan::eval_cpu(const std::vector<array>& inputs, array& out) {
         //
         // TODO: If we add the option to accumulate floats in higher precision
         //       floats perhaps we should add the full all-to-all dispatch.
-        if (reduce_type_ == Scan::Sum && out.dtype() == int32) {
+        if (reduce_type_ == CumulativeScan::Sum && out.dtype() == int32) {
           scan_dispatch<bool, int32_t>(
               reduce_type_, in, out, axis_, reverse_, inclusive_);
         } else {

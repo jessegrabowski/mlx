@@ -1889,11 +1889,11 @@ class Round : public UnaryPrimitive {
   DEFINE_INPUT_OUTPUT_SHAPE()
 };
 
-class Scan : public UnaryPrimitive {
+class CumulativeScan : public UnaryPrimitive {
  public:
   enum ReduceType { Max, Min, Sum, Prod, LogAddExp };
 
-  explicit Scan(
+  explicit CumulativeScan(
       Stream stream,
       ReduceType reduce_type,
       int axis,
@@ -1925,7 +1925,7 @@ class Scan : public UnaryPrimitive {
       case LogAddExp:
         return "CumLogAddExp";
     }
-    return "<unknwon Scan>";
+    return "<unknown CumulativeScan>";
   }
 
   bool is_equivalent(const Primitive& other) const override;

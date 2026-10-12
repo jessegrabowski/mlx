@@ -1,6 +1,7 @@
 // Copyright © 2024 Apple Inc.
 
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <vector>
 
@@ -92,6 +93,33 @@ TEST_CASE("test export primitives with state") {
   auto expected = fun({x});
   auto out = imported_fun({x});
   CHECK(allclose(expected[0], out[0]).item<bool>());
+}
+
+TEST_CASE("test export cumulative scan keeps serialized name") {
+  // Exported files store CumulativeScan as "Scan", so keep that name
+  std::string file_path = get_temp_file("model.mlxfn");
+
+  // Leave out logcumsumexp: its export key is misspelled, so export throws
+  auto fun = [](std::vector<array> x) -> std::vector<array> {
+    return {
+        cumsum(x[0], 0), cumprod(x[0], 0), cummax(x[0], 0), cummin(x[0], 0)};
+  };
+
+  auto x = array({1.0, 2.0, 3.0, 4.0});
+  export_function(file_path, fun, {x});
+
+  std::ifstream f(file_path, std::ios::binary);
+  std::string contents(
+      (std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  CHECK(contents.find("Scan") != std::string::npos);
+  CHECK(contents.find("CumulativeScan") == std::string::npos);
+
+  auto imported_fun = import_function(file_path);
+  auto expected = fun({x});
+  auto out = imported_fun({x});
+  for (size_t i = 0; i < expected.size(); ++i) {
+    CHECK(allclose(expected[i], out[i]).item<bool>());
+  }
 }
 
 TEST_CASE("test export functions with kwargs") {

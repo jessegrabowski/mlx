@@ -662,7 +662,7 @@ void MaskedScatter::eval_gpu(const std::vector<array>& inputs, array& out) {
   scan_gpu_inplace(
       mask_flat,
       scatter_offsets,
-      Scan::Sum,
+      CumulativeScan::Sum,
       /*axis=*/1,
       /*reverse=*/false,
       /*inclusive=*/false,

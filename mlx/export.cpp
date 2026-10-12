@@ -10,15 +10,20 @@
 #include "mlx/version.h"
 
 // clang-format off
-#define SERIALIZE_PRIMITIVE(primitive, ...)  \
-  {                                          \
-    #primitive, {                            \
-      serialize_primitive<primitive>,        \
-      deserialize_primitive<primitive>,      \
-      primitive_state<primitive>,            \
-      {__VA_ARGS__}                          \
-    }                                        \
+// Serialize under `as_name` when the class name differs from the name in
+// exported files
+#define SERIALIZE_PRIMITIVE_AS(primitive, as_name, ...) \
+  {                                                     \
+    as_name, {                                          \
+      serialize_primitive<primitive>,                   \
+      deserialize_primitive<primitive>,                 \
+      primitive_state<primitive>,                       \
+      {__VA_ARGS__}                                     \
+    }                                                   \
   }
+
+#define SERIALIZE_PRIMITIVE(primitive, ...) \
+  SERIALIZE_PRIMITIVE_AS(primitive, #primitive, __VA_ARGS__)
 // clang-format on
 
 bool is_big_endian() {
@@ -422,8 +427,9 @@ struct PrimitiveFactory {
       SERIALIZE_PRIMITIVE(Reshape),
       SERIALIZE_PRIMITIVE(Reduce, "And", "Or", "Sum", "Prod", "Min", "Max"),
       SERIALIZE_PRIMITIVE(Round),
-      SERIALIZE_PRIMITIVE(
-          Scan,
+      SERIALIZE_PRIMITIVE_AS(
+          CumulativeScan,
+          "Scan",
           "CumSum",
           "CumProd",
           "CumMin",

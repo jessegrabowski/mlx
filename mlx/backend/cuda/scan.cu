@@ -321,16 +321,16 @@ __global__ void strided_scan(
 } // namespace cu
 
 template <typename F>
-void dispatch_scan_ops(Scan::ReduceType scan_op, F&& f) {
-  if (scan_op == Scan::ReduceType::Max) {
+void dispatch_scan_ops(CumulativeScan::ReduceType scan_op, F&& f) {
+  if (scan_op == CumulativeScan::ReduceType::Max) {
     f(type_identity<cu::Max>{});
-  } else if (scan_op == Scan::ReduceType::Min) {
+  } else if (scan_op == CumulativeScan::ReduceType::Min) {
     f(type_identity<cu::Min>{});
-  } else if (scan_op == Scan::ReduceType::Sum) {
+  } else if (scan_op == CumulativeScan::ReduceType::Sum) {
     f(type_identity<cu::Sum>{});
-  } else if (scan_op == Scan::ReduceType::Prod) {
+  } else if (scan_op == CumulativeScan::ReduceType::Prod) {
     f(type_identity<cu::Prod>{});
-  } else if (scan_op == Scan::ReduceType::LogAddExp) {
+  } else if (scan_op == CumulativeScan::ReduceType::LogAddExp) {
     f(type_identity<cu::LogAddExp>{});
   } else {
     throw std::invalid_argument("Unknown reduce type.");
@@ -366,7 +366,7 @@ constexpr bool supports_scan_op() {
 void scan_gpu_inplace(
     const array& in,
     array& out,
-    Scan::ReduceType reduce_type,
+    CumulativeScan::ReduceType reduce_type,
     int axis,
     bool reverse,
     bool inclusive,
@@ -451,8 +451,8 @@ void scan_gpu_inplace(
   });
 }
 
-void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
-  nvtx3::scoped_range r("Scan::eval_gpu");
+void CumulativeScan::eval_gpu(const std::vector<array>& inputs, array& out) {
+  nvtx3::scoped_range r("CumulativeScan::eval_gpu");
   assert(inputs.size() == 1);
   auto in = inputs[0];
   auto& s = stream();

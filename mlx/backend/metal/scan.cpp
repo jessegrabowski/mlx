@@ -15,7 +15,7 @@ namespace mlx::core {
 void scan_gpu_inplace(
     const array& in,
     array& out,
-    Scan::ReduceType reduce_type,
+    CumulativeScan::ReduceType reduce_type,
     int axis,
     bool reverse,
     bool inclusive,
@@ -26,19 +26,19 @@ void scan_gpu_inplace(
 
   std::string reduce_type_str;
   switch (reduce_type) {
-    case Scan::Sum:
+    case CumulativeScan::Sum:
       reduce_type_str = "sum";
       break;
-    case Scan::Prod:
+    case CumulativeScan::Prod:
       reduce_type_str = "prod";
       break;
-    case Scan::Max:
+    case CumulativeScan::Max:
       reduce_type_str = "max";
       break;
-    case Scan::Min:
+    case CumulativeScan::Min:
       reduce_type_str = "min";
       break;
-    case Scan::LogAddExp:
+    case CumulativeScan::LogAddExp:
       reduce_type_str = "logaddexp";
       break;
   }
@@ -113,7 +113,7 @@ void scan_gpu_inplace(
   }
 }
 
-void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
+void CumulativeScan::eval_gpu(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 1);
 
   if (out.size() == 0) {

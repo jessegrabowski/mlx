@@ -4312,8 +4312,12 @@ array cumsum(
   return array(
       x.shape(),
       out_type,
-      std::make_shared<Scan>(
-          to_stream(s), Scan::ReduceType::Sum, axis, reverse, inclusive),
+      std::make_shared<CumulativeScan>(
+          to_stream(s),
+          CumulativeScan::ReduceType::Sum,
+          axis,
+          reverse,
+          inclusive),
       {x});
 }
 
@@ -4339,8 +4343,12 @@ array cumprod(
   return array(
       x.shape(),
       x.dtype(),
-      std::make_shared<Scan>(
-          to_stream(s), Scan::ReduceType::Prod, axis, reverse, inclusive),
+      std::make_shared<CumulativeScan>(
+          to_stream(s),
+          CumulativeScan::ReduceType::Prod,
+          axis,
+          reverse,
+          inclusive),
       {x});
 }
 
@@ -4363,8 +4371,12 @@ array cummax(
   return array(
       a.shape(),
       a.dtype(),
-      std::make_shared<Scan>(
-          to_stream(s), Scan::ReduceType::Max, axis, reverse, inclusive),
+      std::make_shared<CumulativeScan>(
+          to_stream(s),
+          CumulativeScan::ReduceType::Max,
+          axis,
+          reverse,
+          inclusive),
       {a});
 }
 
@@ -4386,8 +4398,12 @@ array cummin(
   return array(
       a.shape(),
       a.dtype(),
-      std::make_shared<Scan>(
-          to_stream(s), Scan::ReduceType::Min, axis, reverse, inclusive),
+      std::make_shared<CumulativeScan>(
+          to_stream(s),
+          CumulativeScan::ReduceType::Min,
+          axis,
+          reverse,
+          inclusive),
       {a});
 }
 
@@ -4437,8 +4453,12 @@ array logcumsumexp(
   return array(
       a.shape(),
       out_type,
-      std::make_shared<Scan>(
-          to_stream(s), Scan::ReduceType::LogAddExp, axis, reverse, inclusive),
+      std::make_shared<CumulativeScan>(
+          to_stream(s),
+          CumulativeScan::ReduceType::LogAddExp,
+          axis,
+          reverse,
+          inclusive),
       {astype(a, out_type, s)});
 }
 

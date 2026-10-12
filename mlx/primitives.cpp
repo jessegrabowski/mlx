@@ -4320,24 +4320,25 @@ std::pair<std::vector<array>, std::vector<int>> Round::vmap(
   return {{round(inputs[0], stream())}, axes};
 }
 
-std::pair<std::vector<array>, std::vector<int>> Scan::vmap(
+std::pair<std::vector<array>, std::vector<int>> CumulativeScan::vmap(
     const std::vector<array>& inputs,
     const std::vector<int>& axes) {
   auto& in = inputs[0];
-  auto out_dtype =
-      (in.dtype() == bool_ && reduce_type_ == Scan::Sum) ? int32 : in.dtype();
+  auto out_dtype = (in.dtype() == bool_ && reduce_type_ == CumulativeScan::Sum)
+      ? int32
+      : in.dtype();
   int axis_left = axes[0] >= 0 && axes[0] <= axis_;
   return {
       {array(
           in.shape(),
           out_dtype,
-          std::make_shared<Scan>(
+          std::make_shared<CumulativeScan>(
               stream(), reduce_type_, axis_ + axis_left, reverse_, inclusive_),
           {in})},
       axes};
 }
 
-std::vector<array> Scan::vjp(
+std::vector<array> CumulativeScan::vjp(
     const std::vector<array>& primals,
     const std::vector<array>& cotangents,
     const std::vector<int>& argnums,
@@ -4345,9 +4346,9 @@ std::vector<array> Scan::vjp(
   assert(primals.size() == 1);
   assert(argnums[0] == 0);
 
-  if (reduce_type_ == Scan::Sum) {
+  if (reduce_type_ == CumulativeScan::Sum) {
     return {cumsum(cotangents[0], axis_, !reverse_, inclusive_, stream())};
-  } else if (reduce_type_ == Scan::LogAddExp) {
+  } else if (reduce_type_ == CumulativeScan::LogAddExp) {
     // Ref:
     // https://github.com/tensorflow/tensorflow/blob/2a5910906a0e0f3dbc186ff9db6386d81a63448c/tensorflow/python/ops/math_grad.py#L1832-L1863
 
@@ -4386,7 +4387,7 @@ std::vector<array> Scan::vjp(
             stream()));
 
     return {subtract(output_pos, output_neg, stream())};
-  } else if (reduce_type_ == Scan::Prod) {
+  } else if (reduce_type_ == CumulativeScan::Prod) {
     auto in = primals[0];
     // Find the location of the first 0 and set it to 1:
     // - A: Exclusive cumprod
@@ -4497,16 +4498,16 @@ std::vector<array> Scan::vjp(
   }
 }
 
-std::vector<array> Scan::jvp(
+std::vector<array> CumulativeScan::jvp(
     const std::vector<array>& primals,
     const std::vector<array>& tangents,
     const std::vector<int>& argnums) {
   assert(tangents.size() == 1);
   assert(argnums[0] == 0);
 
-  if (reduce_type_ == Scan::Sum) {
+  if (reduce_type_ == CumulativeScan::Sum) {
     return {cumsum(tangents[0], axis_, reverse_, inclusive_, stream())};
-  } else if (reduce_type_ == Scan::LogAddExp) {
+  } else if (reduce_type_ == CumulativeScan::LogAddExp) {
     if (issubdtype(tangents[0].dtype(), complexfloating)) {
       throw std::invalid_argument(
           "[logcumsumexp] JVP is not supported for complex inputs.");
@@ -4555,8 +4556,8 @@ std::vector<array> Scan::jvp(
   }
 }
 
-bool Scan::is_equivalent(const Primitive& other) const {
-  const Scan& s_other = static_cast<const Scan&>(other);
+bool CumulativeScan::is_equivalent(const Primitive& other) const {
+  const CumulativeScan& s_other = static_cast<const CumulativeScan&>(other);
   return (
       reduce_type_ == s_other.reduce_type_ && axis_ == s_other.axis_ &&
       reverse_ == s_other.reverse_ && inclusive_ == s_other.inclusive_);
