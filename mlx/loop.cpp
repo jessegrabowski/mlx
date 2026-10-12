@@ -36,7 +36,13 @@ std::pair<std::vector<array>, std::vector<array>> scan(
         array(std::move(slice_shape), x.dtype(), nullptr, {}));
   }
 
-  auto trace = detail::compile_loop_body(fun, input_specs);
+  // Trace on the scan stream, so the replay runs the body there
+  auto stream = to_stream(s);
+  detail::LoopBodyTrace trace;
+  {
+    StreamContext body_stream(stream);
+    trace = detail::compile_loop_body(fun, input_specs);
+  }
   int num_carry = init.size();
   detail::compile_validate_loop_carry(trace, num_carry);
 
@@ -67,7 +73,7 @@ std::pair<std::vector<array>, std::vector<array>> scan(
       std::move(shapes),
       dtypes,
       std::make_shared<Scan>(
-          to_stream(s),
+          stream,
           std::move(trace_inputs),
           std::move(trace.outputs),
           std::move(trace.tape),
