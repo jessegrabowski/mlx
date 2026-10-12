@@ -1940,6 +1940,41 @@ class CumulativeScan : public UnaryPrimitive {
   bool inclusive_;
 };
 
+class MLX_API Scan : public Primitive {
+ public:
+  /*
+   * A loop with a fixed step count. It runs a traced body once for each
+   * slice of the scanned inputs.
+   * - The trace-side `inputs` are [consts..., carry..., x_slices...],
+   *   matching the node inputs [consts..., init..., xs...] by position.
+   * - The trace-side `outputs` are [carry..., y_slices...], matching the
+   *   node outputs [final_carry..., stacked_ys...].
+   */
+  explicit Scan(
+      Stream stream,
+      std::vector<array> inputs,
+      std::vector<array> outputs,
+      std::vector<array> tape,
+      int num_consts,
+      int num_carry,
+      int length);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(Scan)
+
+ private:
+  const std::vector<array> inputs_;
+  const std::vector<array> outputs_;
+  const std::vector<array> tape_;
+  int num_consts_;
+  int num_carry_;
+  int length_;
+};
+
 class Scatter : public UnaryPrimitive {
  public:
   enum ReduceType { Max, Min, Sum, Prod, None };

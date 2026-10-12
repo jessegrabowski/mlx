@@ -60,6 +60,7 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/quantized.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/reduce.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/scan.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/scan_loop.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/select.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/softmax.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/logsumexp.cpp

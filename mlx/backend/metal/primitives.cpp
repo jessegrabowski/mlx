@@ -214,4 +214,10 @@ void LUF::eval_gpu(
   throw std::runtime_error("[LUF::eval_gpu] Metal LU factorization NYI.");
 }
 
+void Scan::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  throw std::runtime_error("[Scan::eval_gpu] Metal scan NYI.");
+}
+
 } // namespace mlx::core

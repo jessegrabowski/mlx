@@ -16,6 +16,7 @@
 #include "mlx/fft.h"
 #include "mlx/io.h"
 #include "mlx/linalg.h"
+#include "mlx/loop.h"
 #include "mlx/memory.h"
 #include "mlx/ops.h"
 #include "mlx/random.h"

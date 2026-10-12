@@ -9,6 +9,7 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/einsum.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/fast.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/fft.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/loop.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/ops.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/graph_utils.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/primitives.cpp

@@ -49,6 +49,7 @@ NO_GPU_MULTI(SVD)
 NO_GPU(Inverse)
 NO_GPU_MULTI(Eig)
 NO_GPU_MULTI(Eigh)
+NO_GPU_MULTI(Scan)
 
 namespace fast {
 NO_GPU_MULTI(GatedDeltaUpdate)
