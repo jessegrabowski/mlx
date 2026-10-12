@@ -1,5 +1,6 @@
 // Copyright © 2026 Apple Inc.
 
+#include <sstream>
 #include <unordered_set>
 
 #include "mlx/compile_impl.h"
@@ -7,6 +8,34 @@
 #include "mlx/primitives.h"
 
 namespace mlx::core {
+
+namespace {
+
+// Infer the loop length from the scanned inputs' shared leading axis
+int loop_length(const std::vector<array>& xs) {
+  if (xs.empty()) {
+    throw std::invalid_argument(
+        "[scan] At least one scanned input is required.");
+  }
+  for (auto& x : xs) {
+    if (x.ndim() == 0) {
+      throw std::invalid_argument(
+          "[scan] Scanned inputs must have at least one dimension.");
+    }
+  }
+  int length = xs[0].shape(0);
+  for (auto& x : xs) {
+    if (x.shape(0) != length) {
+      std::ostringstream msg;
+      msg << "[scan] Scanned inputs have mismatched lengths along axis 0: "
+          << length << " and " << x.shape(0) << ".";
+      throw std::invalid_argument(msg.str());
+    }
+  }
+  return length;
+}
+
+} // namespace
 
 Scan::Scan(
     Stream stream,
@@ -29,7 +58,7 @@ std::pair<std::vector<array>, std::vector<array>> scan(
     const std::vector<array>& init,
     const std::vector<array>& xs,
     StreamOrDevice s /* = {} */) {
-  int length = detail::compile_loop_length(xs);
+  int length = loop_length(xs);
   if (length == 0) {
     throw std::invalid_argument("[scan] Zero-length scan is not supported.");
   }

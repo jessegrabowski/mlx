@@ -1230,29 +1230,6 @@ void compile_validate_loop_carry(const LoopBodyTrace& trace, int num_carry) {
   }
 }
 
-int compile_loop_length(const std::vector<array>& xs) {
-  if (xs.empty()) {
-    throw std::invalid_argument(
-        "[scan] At least one scanned input is required.");
-  }
-  for (auto& x : xs) {
-    if (x.ndim() == 0) {
-      throw std::invalid_argument(
-          "[scan] Scanned inputs must have at least one dimension.");
-    }
-  }
-  int length = xs[0].shape(0);
-  for (auto& x : xs) {
-    if (x.shape(0) != length) {
-      std::ostringstream msg;
-      msg << "[scan] Scanned inputs have mismatched lengths along axis 0: "
-          << length << " and " << x.shape(0) << ".";
-      throw std::invalid_argument(msg.str());
-    }
-  }
-  return length;
-}
-
 bool skip_compile() {
   return compile_mode() == CompileMode::disabled ||
       !(compile_available_for_device(default_device()));
