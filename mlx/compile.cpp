@@ -1179,7 +1179,9 @@ LoopBodyTrace compile_loop_body(
 
   auto [tape, parents_map] =
       compile_dfs(all_inputs, trace_outputs, unused_originals);
-  compile_simplify(tape, parents_map, trace_outputs, /* passes */ 3);
+  if (compile_mode().load() != CompileMode::no_simplify) {
+    compile_simplify(tape, parents_map, trace_outputs, /* passes */ 3);
+  }
 
   // Simplify can merge or drop constants, so collect them again. The tape
   // has one entry per multi-output node, so check the siblings too.
