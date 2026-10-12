@@ -47,28 +47,38 @@ void Scan::eval_cpu(
 
   int num_ys = outputs.size() - num_carry_;
   for (int t = 0; t < length_; ++t) {
-    // Materialize this iteration's row of each scanned input
+    // Bind this iteration's row of each scanned input: a zero-copy view
+    // into row-contiguous inputs, a strided copy otherwise
     for (size_t j = num_consts_ + num_carry_; j < inputs_.size(); ++j) {
       auto& x = inputs[j];
       Shape row_shape(x.shape().begin() + 1, x.shape().end());
       array row(row_shape, x.dtype(), nullptr, {});
-      row.set_data(allocator::malloc(row.nbytes()));
 
-      auto [data_shape, row_strides] = row_layout(row);
-      Strides x_row_strides(x.strides().begin() + 1, x.strides().end());
-      if (x_row_strides.empty()) {
-        x_row_strides = Strides{1};
+      if (x.flags().row_contiguous) {
+        row.copy_shared_buffer(
+            x,
+            Strides(x.strides().begin() + 1, x.strides().end()),
+            x.flags(),
+            row.size(),
+            t * x.strides(0));
+      } else {
+        row.set_data(allocator::malloc(row.nbytes()));
+        auto [data_shape, row_strides] = row_layout(row);
+        Strides x_row_strides(x.strides().begin() + 1, x.strides().end());
+        if (x_row_strides.empty()) {
+          x_row_strides = Strides{1};
+        }
+        copy_cpu_inplace(
+            /* src = */ x,
+            /* dst = */ row,
+            /* data_shape = */ data_shape,
+            /* i_strides = */ x_row_strides,
+            /* o_strides = */ row_strides,
+            /* i_offset = */ t * x.strides(0),
+            /* o_offset = */ 0,
+            CopyType::GeneralGeneral,
+            s);
       }
-      copy_cpu_inplace(
-          /* src = */ x,
-          /* dst = */ row,
-          /* data_shape = */ data_shape,
-          /* i_strides = */ x_row_strides,
-          /* o_strides = */ row_strides,
-          /* i_offset = */ t * x.strides(0),
-          /* o_offset = */ 0,
-          CopyType::GeneralGeneral,
-          s);
       encoder.add_temporary(row);
       env.insert_or_assign(inputs_[j].id(), std::move(row));
     }
