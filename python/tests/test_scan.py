@@ -78,10 +78,46 @@ class TestScan(mlx_tests.MLXTestCase):
         xs = mx.ones(3)
         with self.assertRaisesRegex(ValueError, "must return a tuple"):
             mx.scan(lambda c, x: c + x, mx.array(0.0), xs)
-        with self.assertRaisesRegex(ValueError, "Carry 0 changed"):
+        with self.assertRaisesRegex(ValueError, "carry changed from"):
             mx.scan(lambda c, x: (mx.stack([c, c]), x), mx.array(0.0), xs)
         with self.assertRaisesRegex(ValueError, "mismatched lengths"):
             mx.scan(lambda c, x: (c, x), mx.array(0.0), (xs, mx.ones(4)))
+
+    def test_nested_dict_carry(self):
+        def body(c, x):
+            # Return the keys in a different order than init
+            h = c["rnn"]["h"] + x
+            return {"count": c["count"] + 1, "rnn": {"h": h}}, h
+
+        init = {"rnn": {"h": mx.zeros(2)}, "count": mx.array(0)}
+        carry, ys = mx.scan(body, init, mx.ones((3, 2)))
+        self.assertEqual(carry["count"].item(), 3)
+        self.assertEqual(carry["rnn"]["h"].tolist(), [3.0, 3.0])
+        self.assertEqual(ys.tolist(), [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+
+    def test_structure_errors(self):
+        xs = mx.ones((3, 2))
+        init = (mx.zeros(2), mx.zeros(2))
+        with self.assertRaisesRegex(ValueError, r"carry must be a tuple of length 2"):
+            mx.scan(lambda c, x: ((c[0] + x,), c[1]), init, xs)
+        with self.assertRaisesRegex(ValueError, r"as in init, but got list"):
+            mx.scan(lambda c, x: ([c[0], c[1]], None), init, xs)
+        with self.assertRaisesRegex(ValueError, r"carry\[1\] must be an array"):
+            mx.scan(lambda c, x: ((c[0], 1.0), None), init, xs)
+        with self.assertRaisesRegex(ValueError, r"must be a dict with keys \['h'\]"):
+            mx.scan(lambda c, x: ({"g": c["h"]}, None), {"h": mx.zeros(2)}, xs)
+        with self.assertRaisesRegex(ValueError, r"must be a dict with keys \['h'\]"):
+            mx.scan(lambda c, x: ({**c, "g": c["h"]}, None), {"h": mx.zeros(2)}, xs)
+        with self.assertRaisesRegex(
+            ValueError, r"carry\['h'\] changed from float32 with shape \(2\)"
+        ):
+            mx.scan(lambda c, x: ({"h": mx.ones(3)}, None), {"h": mx.zeros(2)}, xs)
+        with self.assertRaisesRegex(ValueError, r"carry changed from int32"):
+            mx.scan(lambda c, x: (c + x, None), mx.zeros(2, mx.int32), xs)
+        with self.assertRaisesRegex(ValueError, r"init\[1\] must be an array"):
+            mx.scan(lambda c, x: (c, None), (mx.zeros(2), 0.0), xs)
+        with self.assertRaisesRegex(ValueError, r"y must be an array"):
+            mx.scan(lambda c, x: (c, 0.0), mx.zeros(2), xs)
 
     def test_body_exception_propagates(self):
         def body(c, x):

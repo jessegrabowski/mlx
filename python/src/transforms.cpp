@@ -411,13 +411,100 @@ auto py_vmap(
   };
 }
 
+std::string scan_subpath(const std::string& path, nb::handle key) {
+  return path + "[" + nb::cast<std::string>(nb::repr(key)) + "]";
+}
+
+// Flatten a tree of arrays and name the path of a leaf that is not an array
+std::vector<mx::array> scan_flatten(nb::handle tree, const std::string& path) {
+  std::vector<mx::array> flat;
+  std::function<void(nb::handle, const std::string&)> recurse =
+      [&](nb::handle subtree, const std::string& subpath) {
+        if (nb::isinstance<nb::list>(subtree) ||
+            nb::isinstance<nb::tuple>(subtree)) {
+          int i = 0;
+          for (auto item : subtree) {
+            recurse(item, scan_subpath(subpath, nb::int_(i++)));
+          }
+        } else if (nb::isinstance<nb::dict>(subtree)) {
+          for (auto [key, value] : nb::cast<nb::dict>(subtree)) {
+            recurse(value, scan_subpath(subpath, key));
+          }
+        } else if (nb::isinstance<mx::array>(subtree)) {
+          flat.push_back(nb::cast<mx::array>(subtree));
+        } else {
+          throw std::invalid_argument(
+              "[scan] " + subpath + " must be an array, but got " +
+              type_name_str(subtree) + ".");
+        }
+      };
+  recurse(tree, path);
+  return flat;
+}
+
+// Flatten the returned carry in the leaf order of init, and check that it
+// keeps the structure of init and the shape and dtype of each leaf
+std::vector<mx::array> scan_flatten_carry(nb::handle init, nb::handle carry) {
+  std::vector<mx::array> flat;
+  std::function<void(nb::handle, nb::handle, const std::string&)> recurse =
+      [&](nb::handle like, nb::handle subtree, const std::string& path) {
+        if (nb::isinstance<nb::list>(like) || nb::isinstance<nb::tuple>(like)) {
+          if (!subtree.type().is(like.type()) ||
+              nb::len(subtree) != nb::len(like)) {
+            std::ostringstream msg;
+            msg << "[scan] The returned " << path << " must be a "
+                << type_name_str(like) << " of length " << nb::len(like)
+                << " as in init, but got " << type_name_str(subtree) << ".";
+            throw std::invalid_argument(msg.str());
+          }
+          for (size_t i = 0; i < nb::len(like); ++i) {
+            recurse(like[i], subtree[i], scan_subpath(path, nb::int_(i)));
+          }
+        } else if (nb::isinstance<nb::dict>(like)) {
+          auto like_dict = nb::cast<nb::dict>(like);
+          bool same_keys = nb::isinstance<nb::dict>(subtree) &&
+              nb::len(subtree) == nb::len(like_dict);
+          for (auto [key, value] : like_dict) {
+            same_keys = same_keys && nb::cast<nb::dict>(subtree).contains(key);
+          }
+          if (!same_keys) {
+            throw std::invalid_argument(
+                "[scan] The returned " + path + " must be a dict with keys " +
+                nb::cast<std::string>(nb::repr(like_dict.keys())) +
+                " as in init.");
+          }
+          auto dict = nb::cast<nb::dict>(subtree);
+          for (auto [key, value] : like_dict) {
+            recurse(value, dict[key], scan_subpath(path, key));
+          }
+        } else if (!nb::isinstance<mx::array>(subtree)) {
+          throw std::invalid_argument(
+              "[scan] The returned " + path + " must be an array, but got " +
+              type_name_str(subtree) + ".");
+        } else {
+          auto in = nb::cast<mx::array>(like);
+          auto out = nb::cast<mx::array>(subtree);
+          if (in.shape() != out.shape() || in.dtype() != out.dtype()) {
+            std::ostringstream msg;
+            msg << "[scan] " << path << " changed from " << in.dtype()
+                << " with shape " << in.shape() << " to " << out.dtype()
+                << " with shape " << out.shape() << ".";
+            throw std::invalid_argument(msg.str());
+          }
+          flat.push_back(out);
+        }
+      };
+  recurse(init, carry, "carry");
+  return flat;
+}
+
 auto py_scan(
     const nb::callable& fun,
     const nb::object& init,
     const nb::object& xs,
     mx::StreamOrDevice s) {
-  auto flat_init = tree_flatten(init, true);
-  auto flat_xs = tree_flatten(xs, true);
+  auto flat_init = scan_flatten(init, "init");
+  auto flat_xs = scan_flatten(xs, "xs");
   int num_carry = flat_init.size();
 
   // Holds the python ys returned by fun to rebuild the stacked ys tree
@@ -433,9 +520,9 @@ auto py_scan(
     }
     auto out_tuple = nb::cast<nb::tuple>(out);
     py_ys = out_tuple[1];
-    auto flat_out = tree_flatten(out_tuple[0], true);
+    auto flat_out = scan_flatten_carry(init, out_tuple[0]);
     if (!py_ys.is_none()) {
-      auto flat_ys = tree_flatten(py_ys, true);
+      auto flat_ys = scan_flatten(py_ys, "y");
       flat_out.insert(flat_out.end(), flat_ys.begin(), flat_ys.end());
     }
     return flat_out;
