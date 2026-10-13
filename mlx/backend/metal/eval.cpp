@@ -30,7 +30,6 @@ void eval(array& arr) {
   auto pool = metal::new_scoped_memory_pool();
   auto s = arr.primitive().stream();
   auto& encoder = metal::get_command_encoder(s);
-  auto* command_buffer = encoder.get_command_buffer();
 
   auto outputs = arr.outputs();
   {
@@ -41,7 +40,8 @@ void eval(array& arr) {
       inputs = arr.inputs();
     }
 
-    debug_set_primitive_buffer_label(command_buffer, arr.primitive());
+    debug_set_primitive_buffer_label(
+        encoder.get_command_buffer(), arr.primitive());
     arr.primitive().eval_gpu(arr.inputs(), outputs);
   }
   std::unordered_set<std::shared_ptr<array::Data>> buffers;
@@ -63,7 +63,9 @@ void eval(array& arr) {
       scheduler::notify_task_completion(s);
     });
   } else {
-    command_buffer->addCompletedHandler(
+    // Get the command buffer after the eval, because the primitive can
+    // commit it
+    encoder.get_command_buffer()->addCompletedHandler(
         [buffers = std::move(buffers)](MTL::CommandBuffer* cbuf) {});
   }
 }

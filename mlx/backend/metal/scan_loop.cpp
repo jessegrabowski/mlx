@@ -8,6 +8,7 @@
 #include "mlx/backend/gpu/copy.h"
 #include "mlx/backend/metal/device.h"
 #include "mlx/primitives.h"
+#include "mlx/scheduler.h"
 
 namespace mlx::core {
 
@@ -249,6 +250,13 @@ void Scan::eval_gpu(
       if (!retired.empty()) {
         retain(std::move(retired));
         retired.clear();
+      }
+
+      // Commit during the scan, so the GPU starts before encoding ends
+      if (encoder.needs_commit()) {
+        encoder.end_encoding();
+        scheduler::notify_new_task(s);
+        encoder.commit([s]() { scheduler::notify_task_completion(s); });
       }
     }
 
