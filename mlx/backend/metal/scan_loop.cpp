@@ -73,6 +73,7 @@ std::optional<MegakernelPlan> plan_scan_megakernel(
   auto elem_shape = plan.nodes.front()->shape();
   std::vector<bool> used(trace_inputs.size(), false);
   std::unordered_set<std::uintptr_t> produced;
+  std::unordered_set<std::uintptr_t> emitted;
   // A node reads scalar or element-shaped leaves, or earlier node outputs
   auto readable = [&](const array& in) {
     if (auto it = leaf_index.find(in.id()); it != leaf_index.end()) {
@@ -89,10 +90,19 @@ std::optional<MegakernelPlan> plan_scan_megakernel(
       if (!body.constant_ids().empty()) {
         return std::nullopt;
       }
-      for (auto& in : body.fused_inputs()) {
-        if (!readable(in)) {
+      // Fusing an earlier section rewires the outer inputs only, so an inner
+      // input can be that section's old output, which its tape emits
+      auto& inner = body.fused_inputs();
+      for (size_t j = 0; j < inner.size(); ++j) {
+        auto& outer = node->inputs()[j];
+        if (!readable(outer) ||
+            (inner[j].id() != outer.id() &&
+             emitted.find(inner[j].id()) == emitted.end())) {
           return std::nullopt;
         }
+      }
+      for (auto& o : body.fused_outputs()) {
+        emitted.insert(o.id());
       }
     } else if (is_elementwise_node(*node)) {
       for (auto& in : node->inputs()) {
@@ -140,6 +150,11 @@ std::optional<MegakernelPlan> plan_scan_megakernel(
     if (used[i]) {
       plan.buffer_inputs.push_back(i);
     }
+  }
+  // The length and size take two buffer slots
+  if (plan.buffer_inputs.size() + trace_outputs.size() + 2 >
+      max_kernel_buffers) {
+    return std::nullopt;
   }
   return plan;
 }
