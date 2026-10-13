@@ -7,6 +7,15 @@
 #include "mlx/api.h"
 #include "mlx/array.h"
 
+namespace mlx::core {
+
+// Elementwise primitive classes the compiler fuses
+bool is_unary(const Primitive& p);
+bool is_binary(const Primitive& p);
+bool is_ternary(const Primitive& p);
+
+} // namespace mlx::core
+
 namespace mlx::core::detail {
 
 using ArraysAndExtra = std::pair<std::vector<array>, std::shared_ptr<void>>;

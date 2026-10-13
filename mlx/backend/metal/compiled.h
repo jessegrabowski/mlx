@@ -17,4 +17,7 @@ void emit_fused_ops(
     NodeNamer& namer,
     const std::string& indent);
 
+// Number of scans dispatched as a single looped kernel since startup
+size_t scan_single_kernel_dispatches();
+
 } // namespace mlx::core

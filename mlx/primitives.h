@@ -659,6 +659,20 @@ class MLX_API Compiled : public Primitive {
     return kernel_lib_;
   }
 
+  // The fused section, used by the Scan single-kernel path
+  const std::vector<array>& fused_inputs() const {
+    return inputs_;
+  }
+  const std::vector<array>& fused_tape() const {
+    return tape_;
+  }
+  const std::vector<array>& fused_outputs() const {
+    return outputs_;
+  }
+  const std::unordered_set<uintptr_t>& constant_ids() const {
+    return constant_ids_;
+  }
+
  private:
   const std::vector<array> inputs_;
   const std::vector<array> outputs_;
