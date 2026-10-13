@@ -851,11 +851,12 @@ void compile_fuse(
 
       // Stop fusing if:
       // - Depth limit exceeded
-      // - Constant input
+      // - Function input or constant input
       // - Stream mismatch
       // - Non fusable primitive
       // - Is global output but has a different shape
-      if (depth >= max_compile_depth || !a.has_primitive() ||
+      if (depth >= max_compile_depth ||
+          input_ids.find(a.id()) != input_ids.end() || !a.has_primitive() ||
           a.primitive().stream() != s || !is_fusable(a.primitive()) ||
           (output_map.find(a.id()) != output_map.end() && a.shape() != shape)) {
         // Possible input
@@ -1181,6 +1182,9 @@ LoopBodyTrace compile_loop_body(
       compile_dfs(all_inputs, trace_outputs, unused_originals);
   if (compile_mode().load() != CompileMode::no_simplify) {
     compile_simplify(tape, parents_map, trace_outputs, /* passes */ 3);
+  }
+  if (compile_mode().load() != CompileMode::no_fuse) {
+    compile_fuse(tape, parents_map, all_inputs, trace_outputs);
   }
 
   // Simplify can merge or drop constants, so collect them again. The tape
