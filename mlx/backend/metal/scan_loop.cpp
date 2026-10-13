@@ -2,6 +2,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <optional>
@@ -10,6 +11,7 @@
 
 #include "mlx/allocator.h"
 #include "mlx/backend/common/compiled.h"
+#include "mlx/backend/common/scan_loop.h"
 #include "mlx/backend/common/utils.h"
 #include "mlx/backend/gpu/copy.h"
 #include "mlx/backend/metal/compiled.h"
@@ -351,50 +353,23 @@ void Scan::eval_gpu(
     return;
   }
 
-  std::unordered_map<std::uintptr_t, array> env;
-  std::unordered_set<std::uintptr_t> leaf_ids;
-  for (auto& in : inputs_) {
-    leaf_ids.insert(in.id());
-  }
+  auto plan = make_scan_plan(inputs_, tape_, outputs_, num_consts_);
+  std::vector<std::optional<array>> env(plan.num_slots);
   for (int i = 0; i < num_consts_ + num_carry_; ++i) {
-    env.insert_or_assign(inputs_[i].id(), inputs[i]);
-  }
-
-  // Keep these bindings for the whole iteration. Release all others at
-  // their last tape use, so body ops can donate them.
-  std::unordered_set<std::uintptr_t> kept_ids;
-  for (auto& o : outputs_) {
-    kept_ids.insert(o.id());
-  }
-  for (int i = 0; i < num_consts_; ++i) {
-    kept_ids.insert(inputs_[i].id());
-  }
-  std::unordered_map<std::uintptr_t, size_t> last_use;
-  std::vector<std::uintptr_t> replay_output_ids;
-  for (size_t idx = 0; idx < tape_.size(); ++idx) {
-    if (leaf_ids.find(tape_[idx].id()) != leaf_ids.end()) {
-      continue;
-    }
-    for (auto& in : tape_[idx].inputs()) {
-      last_use[in.id()] = idx;
-    }
-    for (auto& o : tape_[idx].outputs()) {
-      replay_output_ids.push_back(o.id());
-    }
+    env[plan.input_slots[i]] = inputs[i];
   }
 
   // Release replaced bindings when the command buffer completes
   std::vector<array> retired;
-  auto bind = [&](std::uintptr_t id, array value) {
-    if (auto it = env.find(id); it != env.end()) {
-      retired.push_back(std::move(it->second));
-      it->second = std::move(value);
-    } else {
-      env.emplace(id, std::move(value));
+  auto bind = [&](int slot, array value) {
+    if (env[slot]) {
+      retired.push_back(std::move(*env[slot]));
     }
+    env[slot] = std::move(value);
   };
 
   int num_ys = outputs.size() - num_carry_;
+  std::vector<array> node_inputs;
   try {
     for (int t = 0; t < length_; ++t) {
       for (size_t j = num_consts_ + num_carry_; j < inputs_.size(); ++j) {
@@ -430,81 +405,56 @@ void Scan::eval_gpu(
               ctype,
               s);
         }
-        bind(inputs_[j].id(), std::move(row));
+        bind(plan.input_slots[j], std::move(row));
       }
 
-      // env.at cannot fail: compile_loop_body closes the tape over its inputs
-      for (size_t idx = 0; idx < tape_.size(); ++idx) {
-        auto& node = tape_[idx];
-        if (leaf_ids.find(node.id()) != leaf_ids.end()) {
-          continue;
+      for (auto& step : plan.steps) {
+        node_inputs.clear();
+        for (int slot : step.input_slots) {
+          node_inputs.push_back(env[slot].value());
         }
-        std::vector<array> node_inputs;
-        node_inputs.reserve(node.inputs().size());
-        for (auto& in : node.inputs()) {
-          node_inputs.push_back(env.at(in.id()));
-        }
-        // Erase bindings at their last use, so the op can donate them
-        std::unordered_set<std::uintptr_t> dropped_ids;
-        for (auto& in : node.inputs()) {
-          auto id = in.id();
-          if (kept_ids.find(id) == kept_ids.end()) {
-            if (auto it = last_use.find(id);
-                it != last_use.end() && it->second == idx) {
-              if (env.erase(id) > 0) {
-                dropped_ids.insert(id);
-              }
-            }
-          }
+        // Release bindings at their last use, so the node can donate them
+        for (int i : step.released_inputs) {
+          env[step.input_slots[i]].reset();
         }
 
-        auto trace_outs = node.outputs();
-        std::vector<Shape> shapes;
-        std::vector<Dtype> dtypes;
-        for (auto& o : trace_outs) {
-          shapes.push_back(o.shape());
-          dtypes.push_back(o.dtype());
-        }
         auto node_outputs = array::make_arrays(
-            std::move(shapes), dtypes, node.primitive_ptr(), {});
-
+            step.shapes, step.dtypes, step.node->primitive_ptr(), {});
         try {
-          node.primitive().eval_gpu(node_inputs, node_outputs);
+          step.node->primitive().eval_gpu(node_inputs, node_outputs);
         } catch (...) {
-          // Keep the dropped buffers alive for the recorded kernels
+          // Keep the released buffers alive for the recorded kernels
           retain(std::move(node_inputs));
           throw;
         }
 
-        // Keep dropped buffers alive until the command buffer completes,
+        // Keep released buffers alive until the command buffer completes,
         // except buffers donated into the outputs
-        std::vector<array> dropped;
-        for (size_t i = 0; i < node_inputs.size(); ++i) {
-          if (dropped_ids.find(node.inputs()[i].id()) != dropped_ids.end()) {
-            dropped.push_back(node_inputs[i]);
-          }
+        std::vector<array> released;
+        for (int i : step.released_inputs) {
+          released.push_back(node_inputs[i]);
         }
         for (auto& out : node_outputs) {
           auto same_data = [&out](const array& a) {
             return a.data_shared_ptr() == out.data_shared_ptr();
           };
-          dropped.erase(
-              std::remove_if(dropped.begin(), dropped.end(), same_data),
-              dropped.end());
+          released.erase(
+              std::remove_if(released.begin(), released.end(), same_data),
+              released.end());
         }
-        if (!dropped.empty()) {
-          retain(std::move(dropped));
+        if (!released.empty()) {
+          retain(std::move(released));
         }
 
         for (size_t k = 0; k < node_outputs.size(); ++k) {
-          bind(trace_outs[k].id(), std::move(node_outputs[k]));
+          bind(step.output_slots[k], std::move(node_outputs[k]));
         }
       }
 
       // Copy into a row view, because the vector kernel sizes its dispatch
       // from the destination
       for (int j = 0; j < num_ys; ++j) {
-        auto& y = env.at(outputs_[num_carry_ + j].id());
+        auto& y = env[plan.output_slots[num_carry_ + j]].value();
         auto& stacked = outputs[num_carry_ + j];
         auto [data_shape, row_strides] = row_layout(y);
         array out_row(data_shape, y.dtype(), nullptr, {});
@@ -535,26 +485,27 @@ void Scan::eval_gpu(
       std::vector<array> new_carries;
       new_carries.reserve(num_carry_);
       for (int i = 0; i < num_carry_; ++i) {
-        new_carries.push_back(env.at(outputs_[i].id()));
+        new_carries.push_back(env[plan.output_slots[i]].value());
       }
       for (int i = 0; i < num_carry_; ++i) {
-        bind(inputs_[num_consts_ + i].id(), std::move(new_carries[i]));
+        bind(plan.input_slots[num_consts_ + i], std::move(new_carries[i]));
       }
 
-      // Erase stale outputs, so the next iteration can donate the carry
-      // buffers. Erase carry aliases without a retire.
-      std::unordered_set<std::uintptr_t> carried_value_ids;
+      // Release stale outputs, so the next iteration can donate the carry
+      // buffers. Release carry aliases without a retire.
+      std::vector<std::uintptr_t> carried_ids;
       for (int i = 0; i < num_carry_; ++i) {
-        carried_value_ids.insert(env.at(inputs_[num_consts_ + i].id()).id());
+        carried_ids.push_back(
+            env[plan.input_slots[num_consts_ + i]].value().id());
       }
-      for (auto o_id : replay_output_ids) {
-        if (auto it = env.find(o_id); it != env.end()) {
-          if (carried_value_ids.find(it->second.id()) ==
-              carried_value_ids.end()) {
-            retired.push_back(std::move(it->second));
-          }
-          env.erase(it);
+      for (int slot : plan.node_output_slots) {
+        auto& value = env[slot];
+        if (value &&
+            std::find(carried_ids.begin(), carried_ids.end(), value->id()) ==
+                carried_ids.end()) {
+          retired.push_back(std::move(*value));
         }
+        value.reset();
       }
 
       if (!retired.empty()) {
@@ -571,7 +522,7 @@ void Scan::eval_gpu(
     }
 
     for (int i = 0; i < num_carry_; ++i) {
-      auto& carry = env.at(inputs_[num_consts_ + i].id());
+      auto& carry = env[plan.input_slots[num_consts_ + i]].value();
       auto ctype = carry.flags().row_contiguous ? CopyType::Vector
                                                 : CopyType::GeneralGeneral;
       copy_gpu_inplace(carry, outputs[i], ctype, s);
@@ -579,9 +530,10 @@ void Scan::eval_gpu(
   } catch (...) {
     // Keep the live bindings for the recorded kernels, then rethrow
     std::vector<array> keep;
-    keep.reserve(env.size() + retired.size());
-    for (auto& [id, value] : env) {
-      keep.push_back(std::move(value));
+    for (auto& value : env) {
+      if (value) {
+        keep.push_back(std::move(*value));
+      }
     }
     keep.insert(
         keep.end(),
@@ -593,9 +545,10 @@ void Scan::eval_gpu(
 
   // Keep the live bindings until the command buffer completes
   std::vector<array> remaining;
-  remaining.reserve(env.size());
-  for (auto& [id, value] : env) {
-    remaining.push_back(std::move(value));
+  for (auto& value : env) {
+    if (value) {
+      remaining.push_back(std::move(*value));
+    }
   }
   retain(std::move(remaining));
 }
