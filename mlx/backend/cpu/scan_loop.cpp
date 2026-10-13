@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <optional>
-#include <unordered_set>
 
 #include "mlx/allocator.h"
 #include "mlx/backend/common/scan_loop.h"
@@ -41,7 +40,7 @@ void Scan::eval_cpu(
     env[plan.input_slots[i]] = inputs[i];
   }
 
-  // Release replaced bindings in a task that runs after the queued kernels
+  // Keep replaced and released buffers until the queued kernels run
   std::vector<array> retired;
   auto bind = [&](int slot, array value) {
     if (env[slot]) {
@@ -92,9 +91,7 @@ void Scan::eval_cpu(
         for (int slot : step.input_slots) {
           node_inputs.push_back(env[slot].value());
         }
-        // Release bindings at their last use, so the node can donate them.
-        // Take the data pointers after the eval, so they do not block
-        // donation.
+        // Release bindings at their last use, so the node can donate them
         for (int i : step.released_inputs) {
           env[step.input_slots[i]].reset();
         }
@@ -109,17 +106,16 @@ void Scan::eval_cpu(
           throw;
         }
 
-        // Release the buffers once this node's kernels have run, except
-        // buffers donated into the outputs
-        std::unordered_set<std::shared_ptr<array::Data>> released;
+        // Keep released buffers alive until the iteration's kernels finish,
+        // except buffers donated into the outputs
         for (int i : step.released_inputs) {
-          released.insert(node_inputs[i].data_shared_ptr());
-        }
-        for (auto& out : node_outputs) {
-          released.erase(out.data_shared_ptr());
-        }
-        if (!released.empty()) {
-          encoder.dispatch([released = std::move(released)]() {});
+          auto& in = node_inputs[i];
+          auto donated = [&in](const array& out) {
+            return out.data_shared_ptr() == in.data_shared_ptr();
+          };
+          if (std::none_of(node_outputs.begin(), node_outputs.end(), donated)) {
+            retired.push_back(in);
+          }
         }
 
         for (size_t k = 0; k < node_outputs.size(); ++k) {

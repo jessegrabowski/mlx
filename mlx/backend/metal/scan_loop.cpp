@@ -359,7 +359,7 @@ void Scan::eval_gpu(
     env[plan.input_slots[i]] = inputs[i];
   }
 
-  // Release replaced bindings when the command buffer completes
+  // Keep replaced and released buffers until the command buffer completes
   std::vector<array> retired;
   auto bind = [&](int slot, array value) {
     if (env[slot]) {
@@ -428,22 +428,16 @@ void Scan::eval_gpu(
           throw;
         }
 
-        // Keep released buffers alive until the command buffer completes,
+        // Keep released buffers alive until the iteration's kernels finish,
         // except buffers donated into the outputs
-        std::vector<array> released;
         for (int i : step.released_inputs) {
-          released.push_back(node_inputs[i]);
-        }
-        for (auto& out : node_outputs) {
-          auto same_data = [&out](const array& a) {
-            return a.data_shared_ptr() == out.data_shared_ptr();
+          auto& in = node_inputs[i];
+          auto donated = [&in](const array& out) {
+            return out.data_shared_ptr() == in.data_shared_ptr();
           };
-          released.erase(
-              std::remove_if(released.begin(), released.end(), same_data),
-              released.end());
-        }
-        if (!released.empty()) {
-          retain(std::move(released));
+          if (std::none_of(node_outputs.begin(), node_outputs.end(), donated)) {
+            retired.push_back(in);
+          }
         }
 
         for (size_t k = 0; k < node_outputs.size(); ++k) {
