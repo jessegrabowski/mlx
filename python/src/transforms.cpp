@@ -16,6 +16,7 @@
 #include "mlx/array.h"
 #include "mlx/compile.h"
 #include "mlx/compile_impl.h"
+#include "mlx/loop.h"
 #include "mlx/transforms.h"
 #include "mlx/transforms_impl.h"
 #include "mlx/utils.h"
@@ -408,6 +409,42 @@ auto py_vmap(
     // Put the outputs back in the container
     return tree_unflatten(py_outputs, outputs);
   };
+}
+
+auto py_scan(
+    const nb::callable& fun,
+    const nb::object& init,
+    const nb::object& xs,
+    mx::StreamOrDevice s) {
+  auto flat_init = tree_flatten(init, true);
+  auto flat_xs = tree_flatten(xs, true);
+  int num_carry = flat_init.size();
+
+  // Holds the python ys returned by fun to rebuild the stacked ys tree
+  nb::object py_ys;
+
+  auto body = [&](const std::vector<mx::array>& args) {
+    std::vector<mx::array> carry(args.begin(), args.begin() + num_carry);
+    std::vector<mx::array> x(args.begin() + num_carry, args.end());
+    auto out = fun(tree_unflatten(init, carry), tree_unflatten(xs, x));
+    if (!nb::isinstance<nb::tuple>(out) || nb::len(out) != 2) {
+      throw std::invalid_argument(
+          "[scan] The function must return a tuple (carry, y).");
+    }
+    auto out_tuple = nb::cast<nb::tuple>(out);
+    py_ys = out_tuple[1];
+    auto flat_out = tree_flatten(out_tuple[0], true);
+    if (!py_ys.is_none()) {
+      auto flat_ys = tree_flatten(py_ys, true);
+      flat_out.insert(flat_out.end(), flat_ys.begin(), flat_ys.end());
+    }
+    return flat_out;
+  };
+
+  auto [carry, ys] = mx::scan(body, flat_init, flat_xs, s);
+  return nb::make_tuple(
+      tree_unflatten(init, carry),
+      py_ys.is_none() ? nb::none() : tree_unflatten(py_ys, ys));
 }
 
 struct PyCompiledFun {
@@ -1468,6 +1505,36 @@ void init_transforms(nb::module_& m) {
 
         Returns:
             Callable: The vectorized function.
+      )pbdoc");
+  m.def(
+      "scan",
+      &py_scan,
+      "fun"_a,
+      "init"_a,
+      "xs"_a,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      nb::sig(
+          "def scan(fun: Callable[[Any, Any], tuple[Any, Any]], init: Any, xs: Any, *, stream: StreamOrDevice = None) -> tuple[Any, Any]"),
+      R"pbdoc(
+        Loop ``fun`` over the leading axis of ``xs``, carrying state.
+
+        ``fun`` is traced once, so Python control flow in ``fun`` that
+        depends on array values follows the branch taken during the trace.
+
+        Args:
+            fun (Callable): A function ``fun(carry, x) -> (carry, y)``. The
+              carry is an :class:`array` or a tree of :class:`array` and must
+              keep its structure, shapes, and types. ``x`` is a slice of
+              ``xs`` along axis ``0``, and ``y`` is an :class:`array`, a tree
+              of :class:`array`, or ``None``.
+            init: The initial carry.
+            xs: An :class:`array` or a tree of :class:`array` to scan over
+              axis ``0``. All arrays must have the same length on that axis.
+
+        Returns:
+            tuple: The final carry and the ``y`` values stacked along a new
+            axis ``0``, or ``None`` if ``fun`` returns no ``y``.
       )pbdoc");
   m.def(
       "compile",
