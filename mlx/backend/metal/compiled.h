@@ -10,6 +10,9 @@
 
 namespace mlx::core {
 
+// Buffer argument slots available to a Metal kernel
+constexpr int max_kernel_buffers = 31;
+
 // Emit the statements computing each node of a fused tape into tmp_ locals
 void emit_fused_ops(
     std::string& os,

@@ -256,7 +256,7 @@ inline void build_kernel(
   // Finish the kernel
   os += "}\n";
 
-  if (cnt > 31) {
+  if (cnt > max_kernel_buffers) {
     std::ostringstream msg;
     msg << "[compile] Too many inputs/outputs fused in the Metal Compiled "
         << "primitive which exhausted the available argument buffers for "
