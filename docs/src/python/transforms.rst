@@ -20,3 +20,4 @@ Transforms
    jvp
    vjp
    vmap
+   scan

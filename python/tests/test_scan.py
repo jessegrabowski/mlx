@@ -5,11 +5,14 @@ import mlx_tests
 
 
 class TestScan(mlx_tests.MLXTestCase):
-    def test_cumsum(self):
-        xs = mx.arange(10.0)
-        carry, ys = mx.scan(lambda c, x: (c + x, c + x), mx.array(0.0), xs)
-        self.assertTrue(mx.array_equal(ys, mx.cumsum(xs)))
-        self.assertEqual(carry.item(), 45.0)
+    def test_docstring_example(self):
+        def step(total, x):
+            total = total + x
+            return total, total
+
+        total, sums = mx.scan(step, mx.array(0.0), mx.arange(4.0))
+        self.assertEqual(total.item(), 6.0)
+        self.assertEqual(sums.tolist(), [0.0, 1.0, 3.0, 6.0])
 
     def test_rnn_cell_with_captured_weights(self):
         W = 0.3 * mx.random.normal((8, 8), key=mx.random.key(0))

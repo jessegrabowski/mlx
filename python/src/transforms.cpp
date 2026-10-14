@@ -1618,10 +1618,25 @@ void init_transforms(nb::module_& m) {
             init: The initial carry.
             xs: An :class:`array` or a tree of :class:`array` to scan over
               axis ``0``. All arrays must have the same length on that axis.
+            stream (Stream, optional): Stream or device. Defaults to ``None``
+              in which case the default stream of the default device is used.
 
         Returns:
             tuple: The final carry and the ``y`` values stacked along a new
             axis ``0``, or ``None`` if ``fun`` returns no ``y``.
+
+        Example:
+
+          .. code-block:: python
+
+              import mlx.core as mx
+
+              def step(total, x):
+                  total = total + x
+                  return total, total
+
+              # total is 6.0 and sums is [0.0, 1.0, 3.0, 6.0]
+              total, sums = mx.scan(step, mx.array(0.0), mx.arange(4.0))
       )pbdoc");
   m.def(
       "compile",
