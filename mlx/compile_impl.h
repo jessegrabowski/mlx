@@ -67,12 +67,13 @@ std::pair<std::vector<array>, ParentsMap> compile_dfs(
     std::vector<array>& outputs,
     const std::vector<array>& original_inputs);
 
-// Simplify the tape.
+// Simplify the tape. Keep StopGradient when the tape is later transformed.
 void compile_simplify(
     std::vector<array>& tape,
     ParentsMap& parents_map,
     std::vector<array>& outputs,
-    int passes);
+    int passes,
+    bool keep_stop_gradient = false);
 
 std::vector<array> compile_replace(
     const std::vector<array>& tape,

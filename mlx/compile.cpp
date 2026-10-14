@@ -72,6 +72,10 @@ bool is_noop(const Primitive& p) {
   return typeid(p) == typeid(Copy) || typeid(p) == typeid(StopGradient);
 }
 
+bool is_stop_gradient(const Primitive& p) {
+  return typeid(p) == typeid(StopGradient);
+}
+
 bool is_reduction(const Primitive& p) {
   return typeid(p) == typeid(Reduce) || typeid(p) == typeid(ArgReduce);
 }
@@ -592,7 +596,8 @@ void compile_simplify(
     std::vector<array>& tape,
     ParentsMap& parents_map,
     std::vector<array>& outputs,
-    int passes) {
+    int passes,
+    bool keep_stop_gradient /* = false */) {
   // Helpers to identify identical scalars
   std::map<std::pair<uint64_t, Dtype::Val>, array> scalars;
   auto is_scalar = [](const array& a) {
@@ -681,6 +686,7 @@ void compile_simplify(
     }
     for (auto& arr : tape) {
       if (!arr.has_primitive() || !is_noop(arr.primitive()) ||
+          (keep_stop_gradient && is_stop_gradient(arr.primitive())) ||
           tape_ids.find(arr.inputs()[0].id()) == tape_ids.end()) {
         new_tape.push_back(std::move(arr));
         continue;
@@ -1187,7 +1193,12 @@ LoopBodyTrace compile_loop_body(
   auto [tape, parents_map] =
       compile_dfs(all_inputs, trace_outputs, unused_originals);
   if (compile_mode().load() != CompileMode::no_simplify) {
-    compile_simplify(tape, parents_map, trace_outputs, /* passes */ 3);
+    compile_simplify(
+        tape,
+        parents_map,
+        trace_outputs,
+        /* passes */ 3,
+        /* keep_stop_gradient */ true);
   }
   if (compile_mode().load() != CompileMode::no_fuse) {
     compile_fuse(tape, parents_map, all_inputs, trace_outputs);
