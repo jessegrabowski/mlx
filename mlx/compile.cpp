@@ -672,10 +672,16 @@ void compile_simplify(
   }
   tape = std::move(new_tape);
 
-  // Remove no-ops
+  // Remove no-ops. compile_dfs adds inputs to the tape without their own
+  // inputs, so a no-op whose input is not in the tape is an input. Keep it.
   {
+    std::unordered_set<uintptr_t> tape_ids;
     for (auto& arr : tape) {
-      if (!arr.has_primitive() || !is_noop(arr.primitive())) {
+      tape_ids.insert(arr.id());
+    }
+    for (auto& arr : tape) {
+      if (!arr.has_primitive() || !is_noop(arr.primitive()) ||
+          tape_ids.find(arr.inputs()[0].id()) == tape_ids.end()) {
         new_tape.push_back(std::move(arr));
         continue;
       }

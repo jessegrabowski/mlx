@@ -47,6 +47,13 @@ class TestScan(mlx_tests.MLXTestCase):
             self.assertEqual(carry.item(), 720.0)
             self.assertTrue(mx.array_equal(ys, mx.cumprod(xs)))
 
+    def test_stop_gradient(self):
+        scale = mx.stop_gradient(2 * mx.ones(2))
+        carry, _ = mx.scan(
+            lambda c, x: (c * scale + x, None), mx.zeros(2), mx.ones((3, 2))
+        )
+        self.assertEqual(carry.tolist(), [7.0, 7.0])
+
     def test_carry_tuple_and_multiple_xs(self):
         def fib(c, x):
             a, b = c
