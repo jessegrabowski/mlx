@@ -34,7 +34,8 @@ void Scan::eval_cpu(
     out.set_data(allocator::malloc(out.nbytes()));
   }
 
-  auto plan = make_scan_plan(inputs_, tape_, outputs_, num_consts_);
+  auto& body = fused_body();
+  auto plan = make_scan_plan(body.inputs, body.tape, body.outputs, num_consts_);
   std::vector<std::optional<array>> env(plan.num_slots);
   for (int i = 0; i < num_consts_ + num_carry_; ++i) {
     env[plan.input_slots[i]] = inputs[i];

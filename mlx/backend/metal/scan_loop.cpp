@@ -294,11 +294,12 @@ void Scan::eval_gpu(
     out.set_data(allocator::malloc(out.nbytes()));
   }
 
+  auto& body = fused_body();
   if (auto plan = plan_scan_megakernel(
-          inputs_, outputs_, tape_, num_consts_, num_carry_)) {
+          body.inputs, body.outputs, body.tape, num_consts_, num_carry_)) {
     const std::string token = "SCAN_SINGLE_KERNEL";
     auto source = build_scan_megakernel(
-        token, *plan, inputs_, outputs_, num_consts_, num_carry_);
+        token, *plan, body.inputs, body.outputs, num_consts_, num_carry_);
     auto kernel_name =
         "scan_loop_" + std::to_string(std::hash<std::string>{}(source));
     for (auto pos = source.find(token); pos != std::string::npos;
@@ -353,7 +354,7 @@ void Scan::eval_gpu(
     return;
   }
 
-  auto plan = make_scan_plan(inputs_, tape_, outputs_, num_consts_);
+  auto plan = make_scan_plan(body.inputs, body.tape, body.outputs, num_consts_);
   std::vector<std::optional<array>> env(plan.num_slots);
   for (int i = 0; i < num_consts_ + num_carry_; ++i) {
     env[plan.input_slots[i]] = inputs[i];

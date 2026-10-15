@@ -44,14 +44,24 @@ Scan::Scan(
     std::vector<array> tape,
     int num_consts,
     int num_carry,
-    int length)
+    int length,
+    bool fuse)
     : Primitive(stream),
       inputs_(std::move(inputs)),
       outputs_(std::move(outputs)),
       tape_(std::move(tape)),
       num_consts_(num_consts),
       num_carry_(num_carry),
-      length_(length) {}
+      length_(length),
+      fuse_(fuse) {}
+
+const Scan::FusedBody& Scan::fused_body() const {
+  std::call_once(fuse_flag_, [this]() {
+    fused_body_ =
+        detail::compile_fuse_loop_body(inputs_, tape_, outputs_, fuse_);
+  });
+  return fused_body_;
+}
 
 std::pair<std::vector<array>, std::vector<array>> scan(
     const std::function<std::vector<array>(const std::vector<array>&)>& fun,
@@ -133,7 +143,8 @@ std::pair<std::vector<array>, std::vector<array>> scan(
           std::move(trace.tape),
           num_consts,
           num_carry,
-          length),
+          length,
+          trace.fuse),
       std::move(node_inputs));
 
   std::vector<array> final_carry(

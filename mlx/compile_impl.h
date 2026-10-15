@@ -6,6 +6,7 @@
 
 #include "mlx/api.h"
 #include "mlx/array.h"
+#include "mlx/primitives.h"
 
 namespace mlx::core {
 
@@ -87,6 +88,8 @@ struct LoopBodyTrace {
   std::vector<array> consts;
   std::vector<array> tape;
   std::vector<array> outputs;
+  // Whether to fuse the body, decided by the compile mode at trace time
+  bool fuse;
 };
 
 // Trace a loop body once on placeholder inputs shaped like `input_specs`,
@@ -94,6 +97,20 @@ struct LoopBodyTrace {
 LoopBodyTrace compile_loop_body(
     const std::function<std::vector<array>(const std::vector<array>&)>& fun,
     const std::vector<array>& input_specs);
+
+// Run a loop body tape on new inputs, matched to `inputs` by position
+std::vector<array> compile_replace_loop_body(
+    const std::vector<array>& inputs,
+    const std::vector<array>& tape,
+    const std::vector<array>& outputs,
+    const std::vector<array>& new_inputs);
+
+// Copy a loop body tape onto new inputs, and fuse the copy if `fuse`
+Scan::FusedBody compile_fuse_loop_body(
+    const std::vector<array>& inputs,
+    const std::vector<array>& tape,
+    const std::vector<array>& outputs,
+    bool fuse);
 
 // Check that the traced body returns one output per carry with an unchanged
 // shape and dtype

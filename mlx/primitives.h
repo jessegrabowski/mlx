@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <unordered_set>
 
 #include "mlx/api.h"
@@ -1971,7 +1972,8 @@ class MLX_API Scan : public Primitive {
       std::vector<array> tape,
       int num_consts,
       int num_carry,
-      int length);
+      int length,
+      bool fuse);
 
   void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
       override;
@@ -1980,6 +1982,15 @@ class MLX_API Scan : public Primitive {
 
   DEFINE_NAME(Scan)
 
+  // The body after kernel fusion, with its own inputs in the order of
+  // `inputs`. It is built at the first call.
+  struct FusedBody {
+    std::vector<array> inputs;
+    std::vector<array> tape;
+    std::vector<array> outputs;
+  };
+  const FusedBody& fused_body() const;
+
  private:
   const std::vector<array> inputs_;
   const std::vector<array> outputs_;
@@ -1987,6 +1998,9 @@ class MLX_API Scan : public Primitive {
   int num_consts_;
   int num_carry_;
   int length_;
+  bool fuse_;
+  mutable std::once_flag fuse_flag_;
+  mutable FusedBody fused_body_;
 };
 
 class Scatter : public UnaryPrimitive {

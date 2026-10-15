@@ -1200,9 +1200,6 @@ LoopBodyTrace compile_loop_body(
         /* passes */ 3,
         /* keep_stop_gradient */ true);
   }
-  if (compile_mode().load() != CompileMode::no_fuse) {
-    compile_fuse(tape, parents_map, all_inputs, trace_outputs);
-  }
 
   // Simplify can merge or drop constants, so collect them again. The tape
   // has one entry per multi-output node, so check the siblings too.
@@ -1225,7 +1222,52 @@ LoopBodyTrace compile_loop_body(
       std::move(trace_inputs),
       std::move(live_consts),
       std::move(tape),
-      std::move(trace_outputs)};
+      std::move(trace_outputs),
+      compile_mode().load() != CompileMode::no_fuse};
+}
+
+std::vector<array> compile_replace_loop_body(
+    const std::vector<array>& inputs,
+    const std::vector<array>& tape,
+    const std::vector<array>& outputs,
+    const std::vector<array>& new_inputs) {
+  // Skip the inputs, because a const can still have a primitive
+  std::unordered_set<std::uintptr_t> input_ids;
+  for (auto& in : inputs) {
+    input_ids.insert(in.id());
+  }
+  std::vector<array> nodes;
+  for (auto& a : tape) {
+    if (input_ids.find(a.id()) == input_ids.end()) {
+      nodes.push_back(a);
+    }
+  }
+  return compile_replace(nodes, inputs, outputs, new_inputs, false);
+}
+
+Scan::FusedBody compile_fuse_loop_body(
+    const std::vector<array>& inputs,
+    const std::vector<array>& tape,
+    const std::vector<array>& outputs,
+    bool fuse) {
+  // Fuse a copy, because fusion rewires the graph in place
+  std::vector<array> fused_inputs;
+  std::vector<array> unused_originals;
+  for (auto& in : inputs) {
+    fused_inputs.push_back(array(in.shape(), in.dtype(), nullptr, {}));
+    unused_originals.push_back(array(Shape{}, bool_, nullptr, {}));
+  }
+  auto fused_outputs =
+      compile_replace_loop_body(inputs, tape, outputs, fused_inputs);
+  auto [fused_tape, parents_map] =
+      compile_dfs(fused_inputs, fused_outputs, unused_originals);
+  if (fuse) {
+    // Only transforms need StopGradient, and it stops fusion
+    compile_simplify(fused_tape, parents_map, fused_outputs, /* passes */ 0);
+    compile_fuse(fused_tape, parents_map, fused_inputs, fused_outputs);
+  }
+  return {
+      std::move(fused_inputs), std::move(fused_tape), std::move(fused_outputs)};
 }
 
 void compile_validate_loop_carry(const LoopBodyTrace& trace, int num_carry) {
