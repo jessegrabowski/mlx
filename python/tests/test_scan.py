@@ -20,6 +20,34 @@ def leaves(tree):
 
 
 class TestScan(mlx_tests.MLXTestCase):
+    def assert_jvp_matches_unrolled(self, model, primals):
+        # All primals at once, then each alone so the others get no tangent
+        tangents = [
+            mx.random.normal(p.shape, key=mx.random.key(i)).astype(p.dtype)
+            for i, p in enumerate(primals)
+        ]
+        cases = [(list(range(len(primals))), tangents)]
+        cases += [([i], [tangents[i]]) for i in range(len(primals))]
+        for positions, case_tangents in cases:
+
+            def fn(scan_fn, positions=positions):
+                def f(*values):
+                    full = list(primals)
+                    for i, v in zip(positions, values):
+                        full[i] = v
+                    return leaves(model(scan_fn, *full))
+
+                return f
+
+            case_primals = [primals[i] for i in positions]
+            _, expected = mx.jvp(fn(unrolled), case_primals, case_tangents)
+            _, actual = mx.jvp(fn(mx.scan), case_primals, case_tangents)
+            for a, e in zip(actual, expected):
+                self.assertEqual(a.dtype, e.dtype)
+                self.assertTrue(
+                    mx.allclose(a, e, atol=1e-5), f"tangents of {positions}"
+                )
+
     def test_docstring_example(self):
         def step(total, x):
             total = total + x
@@ -158,6 +186,94 @@ class TestScan(mlx_tests.MLXTestCase):
             mx.scan(lambda c, x: (c, None), (mx.zeros(2), 0.0), xs)
         with self.assertRaisesRegex(ValueError, r"y must be an array"):
             mx.scan(lambda c, x: (c, 0.0), mx.zeros(2), xs)
+
+    def test_jvp(self):
+        h0 = mx.random.normal((3,), key=mx.random.key(0))
+        xs = mx.random.normal((6, 3), key=mx.random.key(1))
+        W = 0.5 * mx.random.normal((3, 3), key=mx.random.key(2))
+
+        def scanned(h0, xs, W):
+            def cell(h, x):
+                h = mx.tanh(h @ W + x)
+                return h, 2 * h
+
+            return mx.scan(cell, h0, xs)
+
+        def unrolled(h0, xs, W):
+            h, ys = h0, []
+            for x in xs:
+                h = mx.tanh(h @ W + x)
+                ys.append(2 * h)
+            return h, mx.stack(ys)
+
+        primals = [h0, xs, W]
+        tangents = [mx.random.normal(p.shape, key=mx.random.key(3)) for p in primals]
+        _, expected = mx.jvp(unrolled, primals, tangents)
+        _, actual = mx.jvp(scanned, primals, tangents)
+        for a, e in zip(actual, expected):
+            self.assertTrue(mx.allclose(a, e, atol=1e-5))
+
+        # The tangent of a captured const reaches the carry
+        def final(W):
+            return scanned(h0, xs, W)[0]
+
+        _, (tangent,) = mx.jvp(final, [W], [mx.ones_like(W)])
+        eps = 1e-2
+        fd = (final(W + eps) - final(W - eps)) / (2 * eps)
+        self.assertTrue(mx.allclose(tangent, fd, atol=1e-3))
+
+    def test_jvp_stop_gradient(self):
+        W = mx.array([0.5, -1.0, 2.0])
+
+        def model(scan, init, xs, W):
+            def body(c, x):
+                c = mx.tanh(mx.stop_gradient(c) * W + x)
+                return c, mx.stop_gradient(W) * c
+
+            return scan(body, init, xs)
+
+        primals = [mx.ones(3), mx.random.normal((5, 3), key=mx.random.key(9)), W]
+        self.assert_jvp_matches_unrolled(model, primals)
+
+    def test_jvp_partial_xs_and_unused_inputs(self):
+        def model(scan, keep, acc, a, b, unused):
+            def body(c, x):
+                k, s = c
+                return (k, s * 0.9 + x[0] * x[1]), mx.sin(x[0])
+
+            return scan(body, (keep, acc), (a, b, unused))
+
+        key = mx.random.key(10)
+        primals = [mx.ones(2), mx.zeros(2)] + [
+            mx.random.normal((4, 2), key=k) for k in mx.random.split(key, 3)
+        ]
+        self.assert_jvp_matches_unrolled(model, primals)
+
+    def test_jvp_outputs_that_are_inputs(self):
+        def model(scan, init, xs, W):
+            return scan(lambda c, x: (x, (c, W, x * c)), init, xs)
+
+        primals = [
+            mx.ones(3),
+            mx.random.normal((4, 3), key=mx.random.key(11)),
+            2 * mx.ones(3),
+        ]
+        self.assert_jvp_matches_unrolled(model, primals)
+
+    def test_jvp_tangent_dtype_differs_from_carry(self):
+        xs = mx.random.normal((4, 3), key=mx.random.key(12))
+
+        def scanned(h):
+            return [mx.scan(lambda c, x: (mx.sin(c) + x, None), h, xs)[0]]
+
+        def reference(h):
+            return [unrolled(lambda c, x: (mx.sin(c) + x, None), h, xs)[0]]
+
+        tangent = [mx.ones(3, dtype=mx.float16)]
+        _, (expected,) = mx.jvp(reference, [mx.ones(3)], tangent)
+        _, (actual,) = mx.jvp(scanned, [mx.ones(3)], tangent)
+        self.assertEqual(actual.dtype, expected.dtype)
+        self.assertTrue(mx.allclose(actual, expected, atol=1e-3))
 
     def test_wide_body(self):
         # Sections of this body need more buffers than a Metal kernel has

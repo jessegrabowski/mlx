@@ -1980,6 +1980,11 @@ class MLX_API Scan : public Primitive {
   void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
       override;
 
+  std::vector<array> jvp(
+      const std::vector<array>& primals,
+      const std::vector<array>& tangents,
+      const std::vector<int>& argnums) override;
+
   DEFINE_NAME(Scan)
 
   // The body after kernel fusion, with its own inputs in the order of
@@ -1992,6 +1997,9 @@ class MLX_API Scan : public Primitive {
   const FusedBody& fused_body() const;
 
  private:
+  // Run the body once on `args`, which match `inputs` by position
+  std::vector<array> replay(const std::vector<array>& args) const;
+
   const std::vector<array> inputs_;
   const std::vector<array> outputs_;
   const std::vector<array> tape_;

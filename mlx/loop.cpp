@@ -1,11 +1,14 @@
 // Copyright © 2026 Apple Inc.
 
+#include <optional>
 #include <sstream>
 #include <unordered_set>
 
 #include "mlx/compile_impl.h"
 #include "mlx/loop.h"
+#include "mlx/ops.h"
 #include "mlx/primitives.h"
+#include "mlx/transforms.h"
 
 namespace mlx::core {
 
@@ -35,6 +38,19 @@ int loop_length(const std::vector<array>& xs) {
   return length;
 }
 
+// Order the outputs of a tangent body as [carry..., carry_tangent...,
+// y..., y_tangent...]
+std::vector<array> interleave_tangents(
+    const std::vector<array>& outs,
+    const std::vector<array>& tangents,
+    int num_carry) {
+  std::vector<array> result(outs.begin(), outs.begin() + num_carry);
+  result.insert(result.end(), tangents.begin(), tangents.begin() + num_carry);
+  result.insert(result.end(), outs.begin() + num_carry, outs.end());
+  result.insert(result.end(), tangents.begin() + num_carry, tangents.end());
+  return result;
+}
+
 } // namespace
 
 Scan::Scan(
@@ -54,6 +70,90 @@ Scan::Scan(
       num_carry_(num_carry),
       length_(length),
       fuse_(fuse) {}
+
+std::vector<array> Scan::replay(const std::vector<array>& args) const {
+  return detail::compile_replace_loop_body(inputs_, tape_, outputs_, args);
+}
+
+std::vector<array> Scan::jvp(
+    const std::vector<array>& primals,
+    const std::vector<array>& tangents,
+    const std::vector<int>& argnums) {
+  // The new scan carries [carry..., carry_tangent...] and scans
+  // [x..., x_tangent...]. It also computes the primals again, because jvp
+  // returns only tangents. Every carry gets a tangent, because the tangent of
+  // a const or an x reaches the carries.
+  int first_x = num_consts_ + num_carry_;
+  int num_xs = primals.size() - first_x;
+  std::vector<array> init(
+      primals.begin() + num_consts_, primals.begin() + first_x);
+  for (int i = 0; i < num_carry_; ++i) {
+    init.push_back(zeros_like(init[i], stream()));
+  }
+  std::vector<array> xs(primals.begin() + first_x, primals.end());
+  std::vector<std::optional<array>> const_tangents(num_consts_);
+  std::vector<int> tangent_xs;
+  for (size_t k = 0; k < argnums.size(); ++k) {
+    int i = argnums[k];
+    if (i < num_consts_) {
+      const_tangents[i] = tangents[k];
+    } else if (i < first_x) {
+      // A carry tangent must keep the dtype of its carry
+      init[num_carry_ + i - num_consts_] =
+          astype(tangents[k], primals[i].dtype(), stream());
+    } else {
+      tangent_xs.push_back(i - first_x);
+      xs.push_back(tangents[k]);
+    }
+  }
+
+  auto body = [&](const std::vector<array>& args) {
+    // args are [carry..., carry_tangent..., x..., x_tangent...]
+    auto inputs = primals;
+    std::vector<int> positions;
+    std::vector<array> body_primals;
+    std::vector<array> body_tangents;
+    auto differentiate = [&](int i, const array& primal, const array& tangent) {
+      positions.push_back(i);
+      body_primals.push_back(primal);
+      body_tangents.push_back(tangent);
+    };
+    for (int i = 0; i < num_consts_; ++i) {
+      if (const_tangents[i]) {
+        differentiate(i, primals[i], *const_tangents[i]);
+      }
+    }
+    for (int i = 0; i < num_carry_; ++i) {
+      differentiate(num_consts_ + i, args[i], args[num_carry_ + i]);
+    }
+    for (int j = 0; j < num_xs; ++j) {
+      inputs[first_x + j] = args[2 * num_carry_ + j];
+    }
+    for (size_t k = 0; k < tangent_xs.size(); ++k) {
+      int j = tangent_xs[k];
+      differentiate(
+          first_x + j,
+          args[2 * num_carry_ + j],
+          args[2 * num_carry_ + num_xs + k]);
+    }
+
+    auto f = [&](const std::vector<array>& values) {
+      auto full = inputs;
+      for (size_t k = 0; k < values.size(); ++k) {
+        full[positions[k]] = values[k];
+      }
+      return replay(full);
+    };
+    auto [outs, outs_tangents] = mlx::core::jvp(f, body_primals, body_tangents);
+    return interleave_tangents(outs, outs_tangents, num_carry_);
+  };
+  auto [carry, ys] = scan(body, init, xs, stream());
+
+  int num_ys = outputs_.size() - num_carry_;
+  std::vector<array> out_tangents(carry.begin() + num_carry_, carry.end());
+  out_tangents.insert(out_tangents.end(), ys.begin() + num_ys, ys.end());
+  return out_tangents;
+}
 
 const Scan::FusedBody& Scan::fused_body() const {
   std::call_once(fuse_flag_, [this]() {
