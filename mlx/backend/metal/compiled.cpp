@@ -41,6 +41,44 @@ void emit_fused_ops(
   }
 }
 
+namespace {
+
+// Buffer arguments of a kernel that build_kernel emits
+int kernel_buffers(
+    const std::vector<array>& inputs,
+    const std::function<bool(size_t)>& is_constant,
+    size_t num_outputs,
+    bool contiguous,
+    bool dynamic_dims) {
+  int count = num_outputs;
+  bool add_indices = false;
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    if (!is_constant(i)) {
+      count++;
+      add_indices |= !is_scalar(inputs[i]) && !contiguous;
+    }
+  }
+  // Input strides, then the output shape or size, then ndim
+  return count + add_indices + 1 + dynamic_dims;
+}
+
+} // namespace
+
+int compiled_kernel_buffers(const Compiled& compiled) {
+  // The strided dynamic variant binds the most buffers
+  auto& inputs = compiled.fused_inputs();
+  auto& constant_ids = compiled.constant_ids();
+  auto is_constant = [&](size_t i) {
+    return constant_ids.find(inputs[i].id()) != constant_ids.end();
+  };
+  return kernel_buffers(
+      inputs,
+      is_constant,
+      compiled.fused_outputs().size(),
+      /* contiguous = */ false,
+      /* dynamic_dims = */ true);
+}
+
 inline void build_kernel(
     std::string& os,
     const std::string& kernel_name,
@@ -256,6 +294,10 @@ inline void build_kernel(
   // Finish the kernel
   os += "}\n";
 
+  assert(
+      cnt ==
+      kernel_buffers(
+          inputs, is_constant, outputs.size(), contiguous, dynamic_dims));
   if (cnt > max_kernel_buffers) {
     std::ostringstream msg;
     msg << "[compile] Too many inputs/outputs fused in the Metal Compiled "

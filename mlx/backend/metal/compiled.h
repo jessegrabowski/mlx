@@ -13,6 +13,11 @@ namespace mlx::core {
 // Buffer argument slots available to a Metal kernel
 constexpr int max_kernel_buffers = 31;
 
+class Compiled;
+
+// Buffers bound by the widest kernel variant of a Compiled primitive
+int compiled_kernel_buffers(const Compiled& compiled);
+
 // Emit the statements computing each node of a fused tape into tmp_ locals
 void emit_fused_ops(
     std::string& os,

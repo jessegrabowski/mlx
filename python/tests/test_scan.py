@@ -2,6 +2,21 @@
 
 import mlx.core as mx
 import mlx_tests
+from mlx.utils import tree_flatten, tree_map
+
+
+def unrolled(fun, init, xs):
+    carry, ys = init, []
+    for t in range(tree_flatten(xs)[0][1].shape[0]):
+        carry, y = fun(carry, tree_map(lambda a: a[t], xs))
+        ys.append(y)
+    if ys[0] is None:
+        return carry, None
+    return carry, tree_map(lambda *rows: mx.stack(rows), *ys)
+
+
+def leaves(tree):
+    return [v for _, v in tree_flatten(tree)]
 
 
 class TestScan(mlx_tests.MLXTestCase):
@@ -143,6 +158,21 @@ class TestScan(mlx_tests.MLXTestCase):
             mx.scan(lambda c, x: (c, None), (mx.zeros(2), 0.0), xs)
         with self.assertRaisesRegex(ValueError, r"y must be an array"):
             mx.scan(lambda c, x: (c, 0.0), mx.zeros(2), xs)
+
+    def test_wide_body(self):
+        # Sections of this body need more buffers than a Metal kernel has
+        def body(c, x):
+            a, b, e = x
+            new = [c[(i + 1) % 14] * 0.9 + mx.sin(c[i]) * a + b * e for i in range(14)]
+            return new, (sum(new), new[3] * new[7])
+
+        init = [mx.full((2,), 0.1 * (i + 1)) for i in range(14)]
+        keys = mx.random.split(mx.random.key(13), 3)
+        xs = tuple(mx.random.normal((5, 2), key=k) for k in keys)
+        carry, ys = mx.scan(body, init, xs)
+        expected_carry, expected_ys = unrolled(body, init, xs)
+        for a, e in zip(leaves((carry, ys)), leaves((expected_carry, expected_ys))):
+            self.assertTrue(mx.allclose(a, e, atol=1e-5))
 
     def test_body_exception_propagates(self):
         def body(c, x):

@@ -2001,6 +2001,8 @@ class MLX_API Scan : public Primitive {
   bool fuse_;
   mutable std::once_flag fuse_flag_;
   mutable FusedBody fused_body_;
+  mutable std::once_flag gpu_fits_flag_;
+  mutable bool gpu_fits_;
 };
 
 class Scatter : public UnaryPrimitive {

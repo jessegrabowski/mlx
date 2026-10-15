@@ -46,6 +46,22 @@ struct MegakernelPlan {
 
 std::atomic<size_t> single_kernel_dispatches{0};
 
+// A fused section past the buffer limit cannot build its kernels
+bool fits_kernel_buffers(const std::vector<array>& tape) {
+  for (auto& node : tape) {
+    if (!node.has_primitive()) {
+      continue;
+    }
+    auto& primitive = node.primitive();
+    if (typeid(primitive) == typeid(Compiled) &&
+        compiled_kernel_buffers(static_cast<const Compiled&>(primitive)) >
+            max_kernel_buffers) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool is_elementwise_node(const array& a) {
   auto& p = a.primitive();
   return a.siblings().empty() && (is_unary(p) || is_binary(p) || is_ternary(p));
@@ -294,12 +310,18 @@ void Scan::eval_gpu(
     out.set_data(allocator::malloc(out.nbytes()));
   }
 
-  auto& body = fused_body();
+  // Replay the unfused body when the fused one does not fit the kernels
+  auto& fused = fused_body();
+  std::call_once(
+      gpu_fits_flag_, [&]() { gpu_fits_ = fits_kernel_buffers(fused.tape); });
+  auto& body_inputs = gpu_fits_ ? fused.inputs : inputs_;
+  auto& body_tape = gpu_fits_ ? fused.tape : tape_;
+  auto& body_outputs = gpu_fits_ ? fused.outputs : outputs_;
   if (auto plan = plan_scan_megakernel(
-          body.inputs, body.outputs, body.tape, num_consts_, num_carry_)) {
+          body_inputs, body_outputs, body_tape, num_consts_, num_carry_)) {
     const std::string token = "SCAN_SINGLE_KERNEL";
     auto source = build_scan_megakernel(
-        token, *plan, body.inputs, body.outputs, num_consts_, num_carry_);
+        token, *plan, body_inputs, body_outputs, num_consts_, num_carry_);
     auto kernel_name =
         "scan_loop_" + std::to_string(std::hash<std::string>{}(source));
     for (auto pos = source.find(token); pos != std::string::npos;
@@ -354,7 +376,7 @@ void Scan::eval_gpu(
     return;
   }
 
-  auto plan = make_scan_plan(body.inputs, body.tape, body.outputs, num_consts_);
+  auto plan = make_scan_plan(body_inputs, body_tape, body_outputs, num_consts_);
   std::vector<std::optional<array>> env(plan.num_slots);
   for (int i = 0; i < num_consts_ + num_carry_; ++i) {
     env[plan.input_slots[i]] = inputs[i];
