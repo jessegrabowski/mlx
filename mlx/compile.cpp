@@ -543,7 +543,11 @@ std::pair<std::vector<array>, ParentsMap> compile_dfs(
       new_tape.push_back(a);
     }
   }
+  // An output that is also an input is a leaf, so keep its inputs
   io_set.clear();
+  for (auto& i : inputs) {
+    io_set.insert(i.id());
+  }
   for (auto& o : outputs) {
     if (!(io_set.insert(o.id()).second)) {
       continue;

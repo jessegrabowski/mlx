@@ -61,6 +61,14 @@ class TestScan(mlx_tests.MLXTestCase):
         )
         self.assertEqual(carry.tolist(), [7.0, 7.0])
 
+    def test_captured_array_as_output(self):
+        W = 1.5 * mx.full((3,), 2.0)
+        carry, ys = mx.scan(lambda c, x: (W, (c + x, W)), mx.ones(3), mx.ones((4, 3)))
+        self.assertEqual(carry.tolist(), [3.0, 3.0, 3.0])
+        self.assertEqual(ys[0][:, 0].tolist(), [2.0, 4.0, 4.0, 4.0])
+        self.assertEqual(ys[1].tolist(), [[3.0] * 3] * 4)
+        self.assertEqual(W.tolist(), [3.0, 3.0, 3.0])
+
     def test_carry_tuple_and_multiple_xs(self):
         def fib(c, x):
             a, b = c
