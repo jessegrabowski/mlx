@@ -155,6 +155,61 @@ std::vector<array> Scan::jvp(
   return out_tangents;
 }
 
+std::pair<std::vector<array>, std::vector<int>> Scan::vmap(
+    const std::vector<array>& inputs,
+    const std::vector<int>& axes) {
+  // The new scan batches every carry at axis 0, and every x at axis 1 so that
+  // a step slice is batched at axis 0. An unbatched init is broadcast, because
+  // a carry keeps its shape and a batched input can reach any carry.
+  int batch_size = 0;
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    if (axes[i] >= 0) {
+      batch_size = inputs[i].shape(axes[i]);
+    }
+  }
+  int first_x = num_consts_ + num_carry_;
+  std::vector<array> init;
+  for (int i = num_consts_; i < first_x; ++i) {
+    if (axes[i] >= 0) {
+      init.push_back(moveaxis(inputs[i], axes[i], 0, stream()));
+    } else {
+      Shape shape = inputs[i].shape();
+      shape.insert(shape.begin(), batch_size);
+      init.push_back(broadcast_to(inputs[i], shape, stream()));
+    }
+  }
+  std::vector<array> xs;
+  for (size_t i = first_x; i < inputs.size(); ++i) {
+    xs.push_back(
+        axes[i] >= 0 ? moveaxis(inputs[i], axes[i], 1, stream()) : inputs[i]);
+  }
+
+  auto body = [&](const std::vector<array>& args) {
+    // args are [carry..., x...]. Vmap does not batch captured arrays, so the
+    // consts are explicit inputs.
+    std::vector<array> body_inputs(
+        inputs.begin(), inputs.begin() + num_consts_);
+    std::vector<int> in_axes(axes.begin(), axes.begin() + num_consts_);
+    for (int i = 0; i < num_carry_; ++i) {
+      body_inputs.push_back(args[i]);
+      in_axes.push_back(0);
+    }
+    for (size_t j = 0; j < xs.size(); ++j) {
+      body_inputs.push_back(args[num_carry_ + j]);
+      in_axes.push_back(axes[first_x + j] >= 0 ? 0 : -1);
+    }
+    auto f = [this](const std::vector<array>& a) { return replay(a); };
+    return mlx::core::vmap(
+        f, in_axes, std::vector<int>(outputs_.size(), 0))(body_inputs);
+  };
+  auto [carry, ys] = scan(body, init, xs, stream());
+
+  std::vector<int> out_axes(carry.size(), 0);
+  out_axes.resize(carry.size() + ys.size(), 1);
+  carry.insert(carry.end(), ys.begin(), ys.end());
+  return {std::move(carry), std::move(out_axes)};
+}
+
 const Scan::FusedBody& Scan::fused_body() const {
   std::call_once(fuse_flag_, [this]() {
     fused_body_ =

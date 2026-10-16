@@ -1985,6 +1985,7 @@ class MLX_API Scan : public Primitive {
       const std::vector<array>& tangents,
       const std::vector<int>& argnums) override;
 
+  DEFINE_VMAP()
   DEFINE_NAME(Scan)
 
   // The body after kernel fusion, with its own inputs in the order of

@@ -290,6 +290,43 @@ class TestScan(mlx_tests.MLXTestCase):
         for a, e in zip(leaves((carry, ys)), leaves((expected_carry, expected_ys))):
             self.assertTrue(mx.allclose(a, e, atol=1e-5))
 
+    def test_vmap(self):
+        def model(init, xs, W, bias):
+            def body(c, x):
+                n, h = c
+                h = mx.tanh(h @ W + x + bias)
+                return (n + 1, h), h * n.astype(h.dtype)
+
+            return leaves(mx.scan(body, (mx.array(0), init), xs))
+
+        keys = mx.random.split(mx.random.key(15), 4)
+        init = mx.random.normal((5, 3), key=keys[0])
+        xs = mx.random.normal((6, 5, 3), key=keys[1])
+        W = 0.5 * mx.random.normal((5, 3, 3), key=keys[2])
+        bias = mx.random.normal((5, 3), key=keys[3])
+        # Batch each input alone, then all at an axis the scan must move
+        configs = [
+            ((init, xs[:, 0], W[0], bias[0]), (0, None, None, None)),
+            ((init[0], mx.moveaxis(xs, 1, 0), W[0], bias[0]), (None, 0, None, None)),
+            ((init[0], xs[:, 0], W, bias[0]), (None, None, 0, None)),
+            ((init[0], xs[:, 0], W[0], bias), (None, None, None, 0)),
+            ((init.T, mx.moveaxis(xs, 1, 2), W, bias), (1, 2, 0, 0)),
+        ]
+        for args, in_axes in configs:
+            got = mx.vmap(model, in_axes=in_axes)(*args)
+            rows = []
+            for b in range(5):
+                element = [
+                    a if axis is None else mx.take(a, b, axis=axis)
+                    for a, axis in zip(args, in_axes)
+                ]
+                rows.append(model(*element))
+            expected = [mx.stack(r) for r in zip(*rows)]
+            self.assertEqual(len(got), len(expected))
+            for g, e in zip(got, expected):
+                self.assertEqual((g.shape, g.dtype), (e.shape, e.dtype), f"{in_axes}")
+                self.assertTrue(mx.allclose(g, e, atol=1e-5), f"{in_axes}")
+
     def test_body_exception_propagates(self):
         def body(c, x):
             raise RuntimeError("body failed")
