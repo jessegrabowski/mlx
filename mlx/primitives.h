@@ -1994,6 +1994,8 @@ class MLX_API Scan : public Primitive {
   DEFINE_VMAP()
   DEFINE_NAME(Scan)
 
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override;
+
   // The body after kernel fusion, with its own inputs in the order of
   // `inputs`. It is built at the first call.
   struct FusedBody {

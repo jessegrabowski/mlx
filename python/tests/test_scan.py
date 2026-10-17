@@ -105,6 +105,31 @@ class TestScan(mlx_tests.MLXTestCase):
         self.assertTrue(mx.allclose(ys, mx.stack(expected), atol=1e-6))
         self.assertTrue(mx.allclose(carry, h, atol=1e-6))
 
+    def test_shapeless_compile(self):
+        def fun(init, xs, W):
+            return mx.scan(lambda c, x: (mx.tanh(c @ W + x), 2 * c), init, xs)
+
+        compiled = mx.compile(fun, shapeless=True)
+        keys = mx.random.split(mx.random.key(22), 3)
+        W = 0.3 * mx.random.normal((3, 3), key=keys[0])
+        for key in keys[1:]:
+            args = (mx.ones(3), mx.random.normal((4, 3), key=key), W)
+            for a, e in zip(leaves(compiled(*args)), leaves(fun(*args))):
+                self.assertEqual(a.shape, e.shape)
+                self.assertTrue(mx.allclose(a, e, atol=1e-6))
+
+        # A new ndim retraces. A new length, carry, row, or const shape reuses
+        # the trace, which has fixed shapes, so it must fail loudly
+        changed = [
+            (mx.ones(3), mx.ones((7, 3)), W),
+            (mx.ones(5), mx.ones((4, 3)), W),
+            (mx.ones(5), mx.ones((4, 5)), mx.ones((5, 5))),
+            (mx.ones(3), mx.ones((4, 3)), mx.ones((3, 1))),
+        ]
+        for args in changed:
+            with self.assertRaisesRegex(ValueError, "Shapeless compile"):
+                compiled(*args)
+
     def test_streams(self):
         devices = [mx.cpu]
         if mx.is_available(mx.gpu):

@@ -51,6 +51,12 @@ std::vector<array> interleave_tangents(
   return result;
 }
 
+// The shape of `length` stacked rows of shape `row`
+Shape stacked_shape(Shape row, int length) {
+  row.insert(row.begin(), length);
+  return row;
+}
+
 // Reverse an array along its leading (step) axis
 array reverse_steps(const array& a, StreamOrDevice s) {
   Shape start(a.ndim(), 0);
@@ -338,6 +344,28 @@ std::pair<std::vector<array>, std::vector<int>> Scan::vmap(
   return {std::move(carry), std::move(out_axes)};
 }
 
+std::vector<Shape> Scan::output_shapes(const std::vector<array>& inputs) {
+  // The body is traced at fixed shapes, so a shapeless compile can reuse a
+  // scan only at the traced shapes
+  size_t first_x = num_consts_ + num_carry_;
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    auto traced = i < first_x ? inputs_[i].shape()
+                              : stacked_shape(inputs_[i].shape(), length_);
+    if (inputs[i].shape() != traced) {
+      throw std::invalid_argument(
+          "[scan] Shapeless compile cannot change the shape of scan inputs.");
+    }
+  }
+  std::vector<Shape> shapes;
+  for (int i = 0; i < num_carry_; ++i) {
+    shapes.push_back(outputs_[i].shape());
+  }
+  for (size_t i = num_carry_; i < outputs_.size(); ++i) {
+    shapes.push_back(stacked_shape(outputs_[i].shape(), length_));
+  }
+  return shapes;
+}
+
 const Scan::FusedBody& Scan::fused_body() const {
   std::call_once(fuse_flag_, [this]() {
     fused_body_ =
@@ -401,9 +429,7 @@ std::pair<std::vector<array>, std::vector<array>> scan(
   }
   for (size_t i = num_carry; i < trace.outputs.size(); ++i) {
     auto& y = trace.outputs[i];
-    Shape stacked = y.shape();
-    stacked.insert(stacked.begin(), length);
-    shapes.push_back(std::move(stacked));
+    shapes.push_back(stacked_shape(y.shape(), length));
     dtypes.push_back(y.dtype());
   }
 
