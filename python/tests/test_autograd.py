@@ -218,6 +218,19 @@ class TestAutograd(mlx_tests.MLXTestCase):
         self.assertEqual(out[1].item(), 2.0 * 1.0 + 6.0 * 3.0)
         self.assertEqual(out[2].item(), 4.0 * 3.0)
 
+    def test_vjp_repeated_output(self):
+        def fun(x):
+            y = 3 * x
+            return (y, y)
+
+        _, dout = mx.vjp(fun, [mx.array(1.0)], [mx.array(1.0), mx.array(2.0)])
+        self.assertEqual(dout[0].item(), 9.0)
+
+        _, dout = mx.vjp(
+            lambda x: (x, x), [mx.array(1.0)], [mx.array(1.0), mx.array(2.0)]
+        )
+        self.assertEqual(dout[0].item(), 3.0)
+
     def test_jvp_with_partly_traced_inputs(self):
         # power: each traced input must use its own tangent (issue #3634)
         def fun(a, b):

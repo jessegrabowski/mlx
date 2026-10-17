@@ -507,7 +507,13 @@ std::pair<std::vector<array>, std::vector<array>> vjp(
     auto& o = outputs[out_idx];
     auto s = o.has_primitive() ? o.primitive().stream()
                                : default_stream(default_device());
-    cotan_map.insert({o.id(), astype(cotans[cotan_idx], o.dtype(), s)});
+    auto cotan = astype(cotans[cotan_idx], o.dtype(), s);
+    // An output can appear more than once, so sum its cotangents
+    if (auto cotan_it = cotan_map.find(o.id()); cotan_it != cotan_map.end()) {
+      cotan_it->second = add(cotan_it->second, cotan, s);
+    } else {
+      cotan_map.insert({o.id(), cotan});
+    }
   }
   for (auto it = tape.rbegin(); it != tape.rend(); ++it) {
     auto& a = *it;
