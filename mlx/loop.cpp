@@ -51,6 +51,17 @@ std::vector<array> interleave_tangents(
   return result;
 }
 
+// Reverse an array along its leading (step) axis
+array reverse_steps(const array& a, StreamOrDevice s) {
+  Shape start(a.ndim(), 0);
+  start[0] = a.shape(0) - 1;
+  Shape stop = a.shape();
+  stop[0] = -a.shape(0) - 1;
+  Shape strides(a.ndim(), 1);
+  strides[0] = -1;
+  return slice(a, std::move(start), std::move(stop), std::move(strides), s);
+}
+
 } // namespace
 
 Scan::Scan(
@@ -153,6 +164,123 @@ std::vector<array> Scan::jvp(
   std::vector<array> out_tangents(carry.begin() + num_carry_, carry.end());
   out_tangents.insert(out_tangents.end(), ys.begin() + num_ys, ys.end());
   return out_tangents;
+}
+
+std::vector<array> Scan::vjp(
+    const std::vector<array>& primals,
+    const std::vector<array>& cotangents,
+    const std::vector<int>& argnums,
+    const std::vector<array>&) {
+  // A forward scan stacks the carry that enters each step. A backward scan
+  // runs over the reversed steps. It carries the carry cotangents and one sum
+  // per selected const, and its ys are the x cotangents.
+  int first_x = num_consts_ + num_carry_;
+  int num_xs = primals.size() - first_x;
+  std::vector<array> init(
+      primals.begin() + num_consts_, primals.begin() + first_x);
+  std::vector<array> xs(primals.begin() + first_x, primals.end());
+
+  std::vector<array> step_carries;
+  if (num_carry_ > 0) {
+    auto forward = [&](const std::vector<array>& args) {
+      auto inputs = primals;
+      std::copy(args.begin(), args.end(), inputs.begin() + num_consts_);
+      auto outs = replay(inputs);
+      outs.erase(outs.begin() + num_carry_, outs.end());
+      outs.insert(outs.end(), args.begin(), args.begin() + num_carry_);
+      return outs;
+    };
+    step_carries = scan(forward, init, xs, stream()).second;
+  }
+
+  std::vector<int> const_positions;
+  std::vector<int> x_positions;
+  for (int i : argnums) {
+    if (i < num_consts_) {
+      const_positions.push_back(i);
+    } else if (i >= first_x) {
+      x_positions.push_back(i);
+    }
+  }
+
+  std::vector<array> back_init(
+      cotangents.begin(), cotangents.begin() + num_carry_);
+  for (int i : const_positions) {
+    back_init.push_back(zeros_like(primals[i], stream()));
+  }
+  std::vector<array> back_xs;
+  for (auto& a : step_carries) {
+    back_xs.push_back(reverse_steps(a, stream()));
+  }
+  for (auto& x : xs) {
+    back_xs.push_back(reverse_steps(x, stream()));
+  }
+  for (size_t i = num_carry_; i < cotangents.size(); ++i) {
+    back_xs.push_back(reverse_steps(cotangents[i], stream()));
+  }
+
+  int num_sums = const_positions.size();
+  auto backward = [&](const std::vector<array>& args) {
+    // args are [carry_cotangent..., sum..., carry..., x..., y_cotangent...]
+    int carry_at = num_carry_ + num_sums;
+    int x_at = carry_at + num_carry_;
+    auto inputs = primals;
+    std::copy(
+        args.begin() + carry_at,
+        args.begin() + x_at + num_xs,
+        inputs.begin() + num_consts_);
+    std::vector<int> positions = const_positions;
+    for (int i = num_consts_; i < first_x; ++i) {
+      positions.push_back(i);
+    }
+    positions.insert(positions.end(), x_positions.begin(), x_positions.end());
+    std::vector<array> body_primals;
+    for (int i : positions) {
+      body_primals.push_back(inputs[i]);
+    }
+    std::vector<array> body_cotangents(args.begin(), args.begin() + num_carry_);
+    body_cotangents.insert(
+        body_cotangents.end(), args.begin() + x_at + num_xs, args.end());
+
+    auto f = [&](const std::vector<array>& values) {
+      auto full = inputs;
+      for (size_t k = 0; k < values.size(); ++k) {
+        full[positions[k]] = values[k];
+      }
+      return replay(full);
+    };
+    auto grads = mlx::core::vjp(f, body_primals, body_cotangents).second;
+
+    // Carries must keep their dtype, so cast each cotangent to its primal
+    std::vector<array> outs;
+    for (int c = 0; c < num_carry_; ++c) {
+      outs.push_back(astype(
+          grads[num_sums + c], primals[num_consts_ + c].dtype(), stream()));
+    }
+    for (int k = 0; k < num_sums; ++k) {
+      outs.push_back(
+          add(args[num_carry_ + k],
+              astype(grads[k], primals[const_positions[k]].dtype(), stream()),
+              stream()));
+    }
+    outs.insert(outs.end(), grads.begin() + num_sums + num_carry_, grads.end());
+    return outs;
+  };
+  auto [back_carry, back_ys] = scan(backward, back_init, back_xs, stream());
+
+  std::vector<array> vjps;
+  int next_sum = 0;
+  int next_x = 0;
+  for (int i : argnums) {
+    if (i < num_consts_) {
+      vjps.push_back(back_carry[num_carry_ + next_sum++]);
+    } else if (i < first_x) {
+      vjps.push_back(back_carry[i - num_consts_]);
+    } else {
+      vjps.push_back(reverse_steps(back_ys[next_x++], stream()));
+    }
+  }
+  return vjps;
 }
 
 std::pair<std::vector<array>, std::vector<int>> Scan::vmap(

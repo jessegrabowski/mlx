@@ -48,6 +48,33 @@ class TestScan(mlx_tests.MLXTestCase):
                     mx.allclose(a, e, atol=1e-5), f"tangents of {positions}"
                 )
 
+    def assert_vjp_matches_unrolled(self, model, primals):
+        # All primals at once, then each alone so the others get no cotangent
+        def fn(scan_fn, positions):
+            def f(*values):
+                full = list(primals)
+                for i, v in zip(positions, values):
+                    full[i] = v
+                return leaves(model(scan_fn, *full))
+
+            return f
+
+        outputs = leaves(model(unrolled, *primals))
+        cotangents = [
+            mx.random.normal(o.shape, key=mx.random.key(20 + i)).astype(o.dtype)
+            for i, o in enumerate(outputs)
+        ]
+        cases = [list(range(len(primals)))] + [[i] for i in range(len(primals))]
+        for positions in cases:
+            case_primals = [primals[i] for i in positions]
+            _, expected = mx.vjp(fn(unrolled, positions), case_primals, cotangents)
+            _, actual = mx.vjp(fn(mx.scan, positions), case_primals, cotangents)
+            for a, e in zip(actual, expected):
+                self.assertEqual((a.shape, a.dtype), (e.shape, e.dtype))
+                self.assertTrue(
+                    mx.allclose(a, e, atol=1e-5), f"cotangents of {positions}"
+                )
+
     def test_docstring_example(self):
         def step(total, x):
             total = total + x
@@ -274,6 +301,110 @@ class TestScan(mlx_tests.MLXTestCase):
         _, (actual,) = mx.jvp(scanned, [mx.ones(3)], tangent)
         self.assertEqual(actual.dtype, expected.dtype)
         self.assertTrue(mx.allclose(actual, expected, atol=1e-3))
+
+    def test_vjp(self):
+        def model(scan, h0, xs, W, b):
+            def cell(c, x):
+                n, h = c
+                h = mx.tanh(h @ W + x + b)
+                return (n + 1, h), h
+
+            return scan(cell, (mx.array(0), h0), xs)
+
+        keys = mx.random.split(mx.random.key(14), 4)
+        primals = [
+            mx.random.normal((3,), key=keys[0]),
+            mx.random.normal((6, 3), key=keys[1]),
+            0.5 * mx.random.normal((3, 3), key=keys[2]),
+            mx.random.normal((3,), key=keys[3]),
+        ]
+        self.assert_vjp_matches_unrolled(model, primals)
+
+        # The gradient of a captured const sums over the steps
+        def loss(W):
+            return model(mx.scan, primals[0], primals[1], W, primals[3])[0][1].sum()
+
+        grad = mx.grad(loss)(primals[2])
+        eps = 1e-3
+        direction = mx.random.normal((3, 3), key=mx.random.key(15))
+        fd = (
+            loss(primals[2] + eps * direction) - loss(primals[2] - eps * direction)
+        ) / (2 * eps)
+        self.assertTrue(mx.allclose((grad * direction).sum(), fd, atol=1e-3))
+
+    def test_vjp_stop_gradient(self):
+        W = mx.array([0.5, -1.0, 2.0])
+
+        def model(scan, init, xs, W):
+            def body(c, x):
+                c = mx.tanh(mx.stop_gradient(c) * W + x)
+                return c, mx.stop_gradient(W) * c
+
+            return scan(body, init, xs)
+
+        primals = [mx.ones(3), mx.random.normal((5, 3), key=mx.random.key(16)), W]
+        self.assert_vjp_matches_unrolled(model, primals)
+
+    def test_vjp_partial_xs_and_unused_inputs(self):
+        def model(scan, keep, acc, a, b, unused):
+            def body(c, x):
+                k, s = c
+                return (k, s * 0.9 + x[0] * x[1]), mx.sin(x[0])
+
+            return scan(body, (keep, acc), (a, b, unused))
+
+        key = mx.random.key(17)
+        primals = [mx.ones(2), mx.zeros(2)] + [
+            mx.random.normal((4, 2), key=k) for k in mx.random.split(key, 3)
+        ]
+        self.assert_vjp_matches_unrolled(model, primals)
+
+    def test_vjp_outputs_that_are_inputs(self):
+        def model(scan, init, xs, W):
+            return scan(lambda c, x: (x, (c, W, x * c)), init, xs)
+
+        primals = [
+            mx.ones(3),
+            mx.random.normal((4, 3), key=mx.random.key(18)),
+            2 * mx.ones(3),
+        ]
+        self.assert_vjp_matches_unrolled(model, primals)
+
+    def test_vjp_cotangent_dtype_differs_from_carry(self):
+        @mx.custom_function
+        def wide_sin(x):
+            return mx.sin(x)
+
+        @wide_sin.vjp
+        def wide_sin_vjp(primals, cotangent, output):
+            return cotangent.astype(mx.float32) * mx.cos(primals)
+
+        xs = mx.random.normal((4, 3), key=mx.random.key(21)).astype(mx.float16)
+
+        def loss(scan_fn, h):
+            carry, _ = scan_fn(lambda c, x: (wide_sin(c) + x, None), h, xs)
+            return carry.astype(mx.float32).sum()
+
+        h = mx.ones(3, dtype=mx.float16)
+        expected = mx.grad(lambda h: loss(unrolled, h))(h)
+        actual = mx.grad(lambda h: loss(mx.scan, h))(h)
+        self.assertEqual(actual.dtype, mx.float16)
+        self.assertTrue(mx.allclose(actual, expected, atol=1e-2))
+
+    def test_grad_of_grad(self):
+        xs = mx.random.normal((5, 3), key=mx.random.key(19))
+
+        def loss(scan_fn, w):
+            carry, ys = scan_fn(
+                lambda c, x: (mx.tanh(c * w + x), c * c), mx.ones(3), xs
+            )
+            return carry.sum() + ys.sum()
+
+        def second(scan_fn):
+            return mx.grad(lambda w: mx.grad(lambda v: loss(scan_fn, v))(w).sum())
+
+        w = mx.array([0.3, -0.2, 0.8])
+        self.assertTrue(mx.allclose(second(mx.scan)(w), second(unrolled)(w), atol=1e-5))
 
     def test_wide_body(self):
         # Sections of this body need more buffers than a Metal kernel has

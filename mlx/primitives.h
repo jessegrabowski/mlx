@@ -1985,6 +1985,12 @@ class MLX_API Scan : public Primitive {
       const std::vector<array>& tangents,
       const std::vector<int>& argnums) override;
 
+  std::vector<array> vjp(
+      const std::vector<array>& primals,
+      const std::vector<array>& cotangents,
+      const std::vector<int>& argnums,
+      const std::vector<array>& outputs) override;
+
   DEFINE_VMAP()
   DEFINE_NAME(Scan)
 
