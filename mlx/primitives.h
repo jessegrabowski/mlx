@@ -2009,6 +2009,12 @@ class MLX_API Scan : public Primitive {
   // Run the body once on `args`, which match `inputs` by position
   std::vector<array> replay(const std::vector<array>& args) const;
 
+  // Run the body on `args` with `values` at `positions`
+  std::vector<array> replay_at(
+      std::vector<array> args,
+      const std::vector<int>& positions,
+      const std::vector<array>& values) const;
+
   const std::vector<array> inputs_;
   const std::vector<array> outputs_;
   const std::vector<array> tape_;

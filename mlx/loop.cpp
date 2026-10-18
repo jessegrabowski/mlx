@@ -92,6 +92,16 @@ std::vector<array> Scan::replay(const std::vector<array>& args) const {
   return detail::compile_replace_loop_body(inputs_, tape_, outputs_, args);
 }
 
+std::vector<array> Scan::replay_at(
+    std::vector<array> args,
+    const std::vector<int>& positions,
+    const std::vector<array>& values) const {
+  for (size_t k = 0; k < values.size(); ++k) {
+    args[positions[k]] = values[k];
+  }
+  return replay(args);
+}
+
 std::vector<array> Scan::jvp(
     const std::vector<array>& primals,
     const std::vector<array>& tangents,
@@ -155,11 +165,7 @@ std::vector<array> Scan::jvp(
     }
 
     auto f = [&](const std::vector<array>& values) {
-      auto full = inputs;
-      for (size_t k = 0; k < values.size(); ++k) {
-        full[positions[k]] = values[k];
-      }
-      return replay(full);
+      return replay_at(inputs, positions, values);
     };
     auto [outs, outs_tangents] = mlx::core::jvp(f, body_primals, body_tangents);
     return interleave_tangents(outs, outs_tangents, num_carry_);
@@ -225,35 +231,33 @@ std::vector<array> Scan::vjp(
     back_xs.push_back(reverse_steps(cotangents[i], stream()));
   }
 
+  std::vector<int> positions = const_positions;
+  for (int i = num_consts_; i < first_x; ++i) {
+    positions.push_back(i);
+  }
+  positions.insert(positions.end(), x_positions.begin(), x_positions.end());
+
+  // The backward args are [carry_cotangent..., sum..., carry..., x...,
+  // y_cotangent...]
   int num_sums = const_positions.size();
+  int carry_at = num_carry_ + num_sums;
+  int y_cotangent_at = carry_at + num_carry_ + num_xs;
   auto backward = [&](const std::vector<array>& args) {
-    // args are [carry_cotangent..., sum..., carry..., x..., y_cotangent...]
-    int carry_at = num_carry_ + num_sums;
-    int x_at = carry_at + num_carry_;
     auto inputs = primals;
     std::copy(
         args.begin() + carry_at,
-        args.begin() + x_at + num_xs,
+        args.begin() + y_cotangent_at,
         inputs.begin() + num_consts_);
-    std::vector<int> positions = const_positions;
-    for (int i = num_consts_; i < first_x; ++i) {
-      positions.push_back(i);
-    }
-    positions.insert(positions.end(), x_positions.begin(), x_positions.end());
     std::vector<array> body_primals;
     for (int i : positions) {
       body_primals.push_back(inputs[i]);
     }
     std::vector<array> body_cotangents(args.begin(), args.begin() + num_carry_);
     body_cotangents.insert(
-        body_cotangents.end(), args.begin() + x_at + num_xs, args.end());
+        body_cotangents.end(), args.begin() + y_cotangent_at, args.end());
 
     auto f = [&](const std::vector<array>& values) {
-      auto full = inputs;
-      for (size_t k = 0; k < values.size(); ++k) {
-        full[positions[k]] = values[k];
-      }
-      return replay(full);
+      return replay_at(inputs, positions, values);
     };
     auto grads = mlx::core::vjp(f, body_primals, body_cotangents).second;
 
