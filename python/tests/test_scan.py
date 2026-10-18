@@ -432,11 +432,16 @@ class TestScan(mlx_tests.MLXTestCase):
             carry, _ = scan_fn(lambda c, x: (wide_sin(c) + x, None), h, xs)
             return carry.astype(mx.float32).sum()
 
+        def loss_of_final_carry(scan_fn, h):
+            carry, _ = scan_fn(lambda c, x: (c * x + x, None), h, xs)
+            return wide_sin(carry).astype(mx.float32).sum()
+
         h = mx.ones(3, dtype=mx.float16)
-        expected = mx.grad(lambda h: loss(unrolled, h))(h)
-        actual = mx.grad(lambda h: loss(mx.scan, h))(h)
-        self.assertEqual(actual.dtype, mx.float16)
-        self.assertTrue(mx.allclose(actual, expected, atol=1e-2))
+        for f in (loss, loss_of_final_carry):
+            expected = mx.grad(lambda h: f(unrolled, h))(h)
+            actual = mx.grad(lambda h: f(mx.scan, h))(h)
+            self.assertEqual(actual.dtype, mx.float16)
+            self.assertTrue(mx.allclose(actual, expected, atol=1e-2))
 
     def test_grad_of_grad(self):
         xs = mx.random.normal((5, 3), key=mx.random.key(19))

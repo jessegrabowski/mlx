@@ -247,8 +247,12 @@ std::vector<array> Scan::vjp(
     }
   }
 
-  std::vector<array> back_init(
-      cotangents.begin(), cotangents.begin() + num_carry_);
+  // A carry cotangent must keep the dtype of its carry
+  std::vector<array> back_init;
+  for (int c = 0; c < num_carry_; ++c) {
+    back_init.push_back(
+        astype(cotangents[c], primals[num_consts_ + c].dtype(), stream()));
+  }
   for (int i : const_positions) {
     back_init.push_back(zeros_like(primals[i], stream()));
   }
