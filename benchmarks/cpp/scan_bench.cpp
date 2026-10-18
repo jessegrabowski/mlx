@@ -1,5 +1,8 @@
 // Copyright © 2026 Apple Inc.
 
+#include <functional>
+#include <string>
+
 #include "mlx/mlx.h"
 #include "time_utils.h"
 
@@ -103,7 +106,7 @@ void time_matmul_scan() {
 
 using Body = std::function<mx::array(const mx::array&, const mx::array&)>;
 
-// The body as an unrolled loop, which mx::compile traces step by step
+// The body as an unrolled loop, which mx::compile traces step by step.
 mx::array unrolled_carry(
     const Body& step,
     mx::array c,
@@ -183,7 +186,7 @@ void time_grad(const std::string& name, const Body& step_of_weight_input) {
 }
 
 // Time a batch of independent scans as one vmapped scan, against a vmap of
-// the compiled unrolled loop
+// the compiled unrolled loop.
 void time_vmap(const std::string& name, const Body& step) {
   int batch = 16;
   int length = 2000;
