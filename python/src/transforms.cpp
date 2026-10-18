@@ -1617,9 +1617,9 @@ void init_transforms(nb::module_& m) {
               keep its structure, shapes, and types. ``x`` is a slice of
               ``xs`` along axis ``0``, and ``y`` is an :class:`array`, a tree
               of :class:`array`, or ``None``.
-            init: The initial carry.
-            xs: An :class:`array` or a tree of :class:`array` to scan over
-              axis ``0``. All arrays must have the same length on that axis.
+            init (array or tree of arrays): The initial carry.
+            xs (array or tree of arrays): The arrays to scan over axis
+              ``0``. All arrays must have the same length on that axis.
             reverse (bool, optional): Run the steps from the last slice of
               ``xs`` to the first. Each ``y`` keeps the position of its
               ``x``. Defaults to ``False``.
