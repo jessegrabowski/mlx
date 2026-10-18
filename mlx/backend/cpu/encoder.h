@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include <functional>
 #include <unordered_map>
+#include <utility>
 
 #include "mlx/array.h"
 #include "mlx/scheduler.h"
@@ -40,8 +42,18 @@ struct MLX_API CommandEncoder {
     return temporaries_;
   }
 
+  // Run each dispatched task at once, for work that runs inside a task of
+  // this stream. Return the previous mode.
+  bool set_inline(bool run_inline) {
+    return std::exchange(inline_, run_inline);
+  }
+
   template <class F, class... Args>
   void dispatch(F&& f, Args&&... args) {
+    if (inline_) {
+      std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
+      return;
+    }
     num_ops_ = (num_ops_ + 1) % DISPATCHES_PER_TASK;
     auto task = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
     if (num_ops_ == 0) {
@@ -59,6 +71,7 @@ struct MLX_API CommandEncoder {
   Stream stream_;
   std::vector<array> temporaries_;
   int num_ops_{0};
+  bool inline_{false};
 };
 
 MLX_API CommandEncoder& get_command_encoder(Stream s);
