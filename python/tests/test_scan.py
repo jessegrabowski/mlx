@@ -593,11 +593,10 @@ class TestScan(mlx_tests.MLXTestCase):
 
             self.assert_vjp_matches_unrolled(model, primals)
 
-    @unittest.skipUnless(mx.is_available(mx.gpu), "needs a gpu")
+    @unittest.skipIf(not mx.is_available(mx.gpu), "GPU is not available")
     def test_grad_stores_residuals_and_checkpoint_stores_less(self):
-        # Each tanh vjp reads its input, so the plain body stores twenty
-        # stacked residuals at once. The checkpoint stores its outputs and
-        # recomputes the rest, so only its step temporaries add to its peak.
+        # The plain body stores twenty stacked tanh inputs. The checkpoint
+        # recomputes them, so only its step temporaries add to its peak.
         length, width = 200, 1 << 14
         xs = 0.01 * mx.random.normal((length, width), key=mx.random.key(30))
         h = mx.zeros(width)
