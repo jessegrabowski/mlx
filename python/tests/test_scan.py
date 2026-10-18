@@ -733,6 +733,37 @@ class TestScan(mlx_tests.MLXTestCase):
         carry, _ = mx.scan(lambda c, x: (c + x, None), mx.array(0.0), mx.ones(3))
         self.assertEqual(carry.item(), 3.0)
 
+    def test_kernel_error_in_body_raises_at_eval(self):
+        def step(c, x):
+            return mx.linalg.inv(mx.diag(c * x)).diagonal(), None
+
+        with mx.stream(mx.cpu):
+            carry, _ = mx.scan(step, mx.ones(4), mx.zeros((3, 4)))
+            with self.assertRaisesRegex(RuntimeError, "LU factorization failed"):
+                mx.eval(carry)
+
+            carry, _ = mx.scan(step, mx.ones(4), mx.ones((3, 4)))
+            self.assertTrue(mx.array_equal(carry, mx.ones(4)))
+
+    def test_cpu_memory_does_not_grow_with_length(self):
+        # Each step frees its buffers, so the peak stays near two rows
+        length, width = 2000, 1 << 14
+
+        def step(c, x):
+            return mx.tanh(mx.sin(c) * 0.9 + x), None
+
+        with mx.stream(mx.cpu):
+            xs = mx.random.normal((length, width), key=mx.random.key(40))
+            h = mx.zeros(width)
+            mx.eval(xs, h, mx.scan(step, h, xs)[0])
+            mx.synchronize()
+            mx.reset_peak_memory()
+            baseline = mx.get_active_memory()
+            mx.eval(mx.scan(step, h, xs)[0])
+            mx.synchronize()
+            peak_in_rows = (mx.get_peak_memory() - baseline) / (width * 4)
+        self.assertLess(peak_in_rows, 4)
+
 
 if __name__ == "__main__":
     mlx_tests.MLXTestRunner()
