@@ -5,11 +5,12 @@ import mlx_tests
 from mlx.utils import tree_flatten, tree_map
 
 
-def unrolled(fun, init, xs):
-    carry, ys = init, []
-    for t in range(tree_flatten(xs)[0][1].shape[0]):
-        carry, y = fun(carry, tree_map(lambda a: a[t], xs))
-        ys.append(y)
+def unrolled(fun, init, xs, reverse=False):
+    length = tree_flatten(xs)[0][1].shape[0]
+    steps = range(length - 1, -1, -1) if reverse else range(length)
+    carry, ys = init, [None] * length
+    for t in steps:
+        carry, ys[t] = fun(carry, tree_map(lambda a: a[t], xs))
     if ys[0] is None:
         return carry, None
     return carry, tree_map(lambda *rows: mx.stack(rows), *ys)
@@ -83,6 +84,37 @@ class TestScan(mlx_tests.MLXTestCase):
         total, sums = mx.scan(step, mx.array(0.0), mx.arange(4.0))
         self.assertEqual(total.item(), 6.0)
         self.assertEqual(sums.tolist(), [0.0, 1.0, 3.0, 6.0])
+
+    def test_reverse(self):
+        W = 0.5 * mx.random.normal((3, 3), key=mx.random.key(23))
+        xs = mx.random.normal((5, 3), key=mx.random.key(24))
+        bodies = {
+            "elementwise": lambda c, x: (0.9 * c + mx.sin(x), c * x),
+            "matmul": lambda c, x: (mx.tanh(c @ W + x), {"c": c, "x": x}),
+        }
+        for name, body in bodies.items():
+            expected = leaves(unrolled(body, mx.ones(3), xs, reverse=True))
+            actual = leaves(mx.scan(body, mx.ones(3), xs, reverse=True))
+            self.assertEqual(len(actual), len(expected), name)
+            for a, e in zip(actual, expected):
+                self.assertEqual(a.shape, e.shape, name)
+                self.assertTrue(mx.allclose(a, e, atol=1e-6), name)
+
+        carry, ys = mx.scan(
+            lambda c, x: (c * 0.5 + x, None), mx.ones(3), xs, reverse=True
+        )
+        expected, _ = unrolled(
+            lambda c, x: (c * 0.5 + x, None), mx.ones(3), xs, reverse=True
+        )
+        self.assertIsNone(ys)
+        self.assertTrue(mx.allclose(carry, expected, atol=1e-6))
+
+        # The last step reads the first row, and each y keeps the row of its x
+        total, ys = mx.scan(
+            lambda c, x: (c + x, c), mx.array(0.0), mx.arange(4.0), reverse=True
+        )
+        self.assertEqual(total.item(), 6.0)
+        self.assertEqual(ys.tolist(), [6.0, 5.0, 3.0, 0.0])
 
     def test_rnn_cell_with_captured_weights(self):
         W = 0.3 * mx.random.normal((8, 8), key=mx.random.key(0))
@@ -457,6 +489,34 @@ class TestScan(mlx_tests.MLXTestCase):
 
         w = mx.array([0.3, -0.2, 0.8])
         self.assertTrue(mx.allclose(second(mx.scan)(w), second(unrolled)(w), atol=1e-5))
+
+    def test_transforms_of_reverse(self):
+        def model(scan, init, xs, W):
+            def body(c, x):
+                c = mx.tanh(c @ W + x)
+                return c, (c * x, mx.sum(c))
+
+            return scan(body, init, xs, reverse=True)
+
+        keys = mx.random.split(mx.random.key(27), 3)
+        primals = [
+            mx.random.normal((3,), key=keys[0]),
+            mx.random.normal((5, 3), key=keys[1]),
+            0.5 * mx.random.normal((3, 3), key=keys[2]),
+        ]
+        self.assert_jvp_matches_unrolled(model, primals)
+        self.assert_vjp_matches_unrolled(model, primals)
+
+        batched_xs = mx.stack([primals[1], 2 * primals[1]])
+        actual = leaves(
+            mx.vmap(lambda xs: model(mx.scan, primals[0], xs, primals[2]))(batched_xs)
+        )
+        rows = [
+            leaves(model(unrolled, primals[0], xs, primals[2])) for xs in batched_xs
+        ]
+        for a, e in zip(actual, (mx.stack(r) for r in zip(*rows))):
+            self.assertEqual(a.shape, e.shape)
+            self.assertTrue(mx.allclose(a, e, atol=1e-5))
 
     def test_wide_body(self):
         # Sections of this body need more buffers than a Metal kernel has

@@ -1964,6 +1964,7 @@ class MLX_API Scan : public Primitive {
    *   matching the node inputs [consts..., init..., xs...] by position.
    * - The trace-side `outputs` are [carry..., y_slices...], matching the
    *   node outputs [final_carry..., stacked_ys...].
+   * - If `reverse` is set, step t reads and writes row length - 1 - t.
    */
   explicit Scan(
       Stream stream,
@@ -1973,6 +1974,7 @@ class MLX_API Scan : public Primitive {
       int num_consts,
       int num_carry,
       int length,
+      bool reverse,
       bool fuse);
 
   void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
@@ -2021,12 +2023,18 @@ class MLX_API Scan : public Primitive {
       const std::vector<array>& primals,
       const std::vector<int>& const_positions) const;
 
+  // The row of the scanned inputs and ys that step `t` reads and writes
+  int step_row(int t) const {
+    return reverse_ ? length_ - 1 - t : t;
+  }
+
   const std::vector<array> inputs_;
   const std::vector<array> outputs_;
   const std::vector<array> tape_;
   int num_consts_;
   int num_carry_;
   int length_;
+  bool reverse_;
   bool fuse_;
   mutable std::once_flag fuse_flag_;
   mutable FusedBody fused_body_;

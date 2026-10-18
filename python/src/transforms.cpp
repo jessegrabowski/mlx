@@ -502,6 +502,7 @@ auto py_scan(
     const nb::callable& fun,
     const nb::object& init,
     const nb::object& xs,
+    bool reverse,
     mx::StreamOrDevice s) {
   auto flat_init = scan_flatten(init, "init");
   auto flat_xs = scan_flatten(xs, "xs");
@@ -528,7 +529,7 @@ auto py_scan(
     return flat_out;
   };
 
-  auto [carry, ys] = mx::scan(body, flat_init, flat_xs, s);
+  auto [carry, ys] = mx::scan(body, flat_init, flat_xs, reverse, s);
   return nb::make_tuple(
       tree_unflatten(init, carry),
       py_ys.is_none() ? nb::none() : tree_unflatten(py_ys, ys));
@@ -1600,9 +1601,10 @@ void init_transforms(nb::module_& m) {
       "init"_a,
       "xs"_a,
       nb::kw_only(),
+      "reverse"_a = false,
       "stream"_a = nb::none(),
       nb::sig(
-          "def scan(fun: Callable[[Any, Any], tuple[Any, Any]], init: Any, xs: Any, *, stream: StreamOrDevice = None) -> tuple[Any, Any]"),
+          "def scan(fun: Callable[[Any, Any], tuple[Any, Any]], init: Any, xs: Any, *, reverse: bool = False, stream: StreamOrDevice = None) -> tuple[Any, Any]"),
       R"pbdoc(
         Loop ``fun`` over the leading axis of ``xs``, carrying state.
 
@@ -1618,6 +1620,9 @@ void init_transforms(nb::module_& m) {
             init: The initial carry.
             xs: An :class:`array` or a tree of :class:`array` to scan over
               axis ``0``. All arrays must have the same length on that axis.
+            reverse (bool, optional): Run the steps from the last slice of
+              ``xs`` to the first. Each ``y`` keeps the position of its
+              ``x``. Defaults to ``False``.
             stream (Stream, optional): Stream or device. Defaults to ``None``
               in which case the default stream of the default device is used.
 

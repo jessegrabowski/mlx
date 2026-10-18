@@ -183,7 +183,8 @@ std::string build_scan_megakernel(
     const std::vector<array>& trace_inputs,
     const std::vector<array>& trace_outputs,
     int num_consts,
-    int num_carry) {
+    int num_carry,
+    bool reverse) {
   NodeNamer namer;
   std::string os;
   int cnt = 0;
@@ -224,6 +225,7 @@ std::string build_scan_megakernel(
   }
 
   os += "  for (uint t = 0; t < length; ++t) {\n";
+  os += reverse ? "    uint row = length - 1 - t;\n" : "    uint row = t;\n";
   for (int i : plan.buffer_inputs) {
     if (i < num_loop_invariant) {
       continue;
@@ -233,7 +235,7 @@ std::string build_scan_megakernel(
         "    {0} tmp_{1} = {1}[{2}];\n",
         get_type_string(leaf.dtype()),
         namer.get_name(leaf),
-        is_scalar(leaf) ? "t" : "ulong(t) * n + index");
+        is_scalar(leaf) ? "row" : "ulong(row) * n + index");
   }
 
   for (auto* node : plan.nodes) {
@@ -257,7 +259,7 @@ std::string build_scan_megakernel(
 
   for (size_t k = num_carry; k < trace_outputs.size(); ++k) {
     os += fmt::format(
-        "    sout_{0}[ulong(t) * n + index] = tmp_{1};\n",
+        "    sout_{0}[ulong(row) * n + index] = tmp_{1};\n",
         k,
         namer.get_name(trace_outputs[k]));
   }
@@ -321,7 +323,13 @@ void Scan::eval_gpu(
           body_inputs, body_outputs, body_tape, num_consts_, num_carry_)) {
     const std::string token = "SCAN_SINGLE_KERNEL";
     auto source = build_scan_megakernel(
-        token, *plan, body_inputs, body_outputs, num_consts_, num_carry_);
+        token,
+        *plan,
+        body_inputs,
+        body_outputs,
+        num_consts_,
+        num_carry_,
+        reverse_);
     auto kernel_name =
         "scan_loop_" + std::to_string(std::hash<std::string>{}(source));
     for (auto pos = source.find(token); pos != std::string::npos;
@@ -395,6 +403,7 @@ void Scan::eval_gpu(
   std::vector<array> node_inputs;
   try {
     for (int t = 0; t < length_; ++t) {
+      int row_index = step_row(t);
       for (size_t j = num_consts_ + num_carry_; j < inputs_.size(); ++j) {
         auto& x = inputs[j];
         Shape row_shape(x.shape().begin() + 1, x.shape().end());
@@ -406,7 +415,7 @@ void Scan::eval_gpu(
               Strides(x.strides().begin() + 1, x.strides().end()),
               x.flags(),
               row.size(),
-              t * x.strides(0));
+              row_index * x.strides(0));
         } else {
           row.set_data(allocator::malloc(row.nbytes()));
           auto [data_shape, row_strides] = row_layout(row);
@@ -423,7 +432,7 @@ void Scan::eval_gpu(
               /* data_shape = */ data_shape,
               /* i_strides = */ x_row_strides,
               /* o_strides = */ row_strides,
-              /* i_offset = */ t * x.strides(0),
+              /* i_offset = */ row_index * x.strides(0),
               /* o_offset = */ 0,
               ctype,
               s);
@@ -480,7 +489,7 @@ void Scan::eval_gpu(
             row_strides,
             stacked.flags(),
             y.size(),
-            t * static_cast<int64_t>(y.size()));
+            row_index * static_cast<int64_t>(y.size()));
         if (y.flags().row_contiguous) {
           copy_gpu_inplace(y, out_row, CopyType::Vector, s);
         } else {

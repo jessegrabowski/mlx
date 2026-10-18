@@ -26,7 +26,7 @@ void time_elementwise_scan() {
   TIMEM("elementwise gpu", scan_gpu);
 
   auto scan_cpu = [&]() {
-    auto [carry, ys] = mx::scan(body, {init}, {xs}, mx::Device::cpu);
+    auto [carry, ys] = mx::scan(body, {init}, {xs}, false, mx::Device::cpu);
     return carry[0];
   };
   TIMEM("elementwise cpu", scan_cpu);
@@ -82,7 +82,7 @@ void time_matmul_scan() {
   TIMEM("matmul gpu", scan_gpu);
 
   auto scan_cpu = [&]() {
-    auto [carry, ys] = mx::scan(body, {init}, {xs}, mx::Device::cpu);
+    auto [carry, ys] = mx::scan(body, {init}, {xs}, false, mx::Device::cpu);
     return carry[0];
   };
   TIMEM("matmul cpu", scan_cpu);

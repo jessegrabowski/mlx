@@ -58,17 +58,6 @@ Shape stacked_shape(Shape row, int length) {
   return row;
 }
 
-// Reverse an array along its leading (step) axis
-array reverse_steps(const array& a, StreamOrDevice s) {
-  Shape start(a.ndim(), 0);
-  start[0] = a.shape(0) - 1;
-  Shape stop = a.shape();
-  stop[0] = -a.shape(0) - 1;
-  Shape strides(a.ndim(), 1);
-  strides[0] = -1;
-  return slice(a, std::move(start), std::move(stop), std::move(strides), s);
-}
-
 bool is_stop_gradient(const array& a) {
   if (!a.has_primitive()) {
     return false;
@@ -87,6 +76,7 @@ Scan::Scan(
     int num_consts,
     int num_carry,
     int length,
+    bool reverse,
     bool fuse)
     : Primitive(stream),
       inputs_(std::move(inputs)),
@@ -95,6 +85,7 @@ Scan::Scan(
       num_consts_(num_consts),
       num_carry_(num_carry),
       length_(length),
+      reverse_(reverse),
       fuse_(fuse) {}
 
 std::vector<array> Scan::replay(const std::vector<array>& args) const {
@@ -202,7 +193,7 @@ std::vector<array> Scan::jvp(
     auto [outs, outs_tangents] = mlx::core::jvp(f, body_primals, body_tangents);
     return interleave_tangents(outs, outs_tangents, num_carry_);
   };
-  auto [carry, ys] = scan(body, init, xs, stream());
+  auto [carry, ys] = scan(body, init, xs, reverse_, stream());
 
   int num_ys = outputs_.size() - num_carry_;
   std::vector<array> out_tangents(carry.begin() + num_carry_, carry.end());
@@ -216,8 +207,8 @@ std::vector<array> Scan::vjp(
     const std::vector<int>& argnums,
     const std::vector<array>&) {
   // A forward scan stacks the carry that enters each step. A backward scan
-  // runs over the reversed steps. It carries the carry cotangents and one sum
-  // per selected const, and its ys are the x cotangents.
+  // runs the steps in the opposite order. It carries the carry cotangents and
+  // one sum per selected const, and its ys are the x cotangents.
   int first_x = num_consts_ + num_carry_;
   int num_xs = primals.size() - first_x;
   std::vector<array> init(
@@ -234,7 +225,7 @@ std::vector<array> Scan::vjp(
       outs.insert(outs.end(), args.begin(), args.begin() + num_carry_);
       return outs;
     };
-    step_carries = scan(forward, init, xs, stream()).second;
+    step_carries = scan(forward, init, xs, reverse_, stream()).second;
   }
 
   std::vector<int> const_positions;
@@ -256,16 +247,10 @@ std::vector<array> Scan::vjp(
   for (int i : const_positions) {
     back_init.push_back(zeros_like(primals[i], stream()));
   }
-  std::vector<array> back_xs;
-  for (auto& a : step_carries) {
-    back_xs.push_back(reverse_steps(a, stream()));
-  }
-  for (auto& x : xs) {
-    back_xs.push_back(reverse_steps(x, stream()));
-  }
-  for (size_t i = num_carry_; i < cotangents.size(); ++i) {
-    back_xs.push_back(reverse_steps(cotangents[i], stream()));
-  }
+  auto back_xs = step_carries;
+  back_xs.insert(back_xs.end(), xs.begin(), xs.end());
+  back_xs.insert(
+      back_xs.end(), cotangents.begin() + num_carry_, cotangents.end());
 
   auto stopped = stopped_outputs(primals, const_positions);
   std::vector<int> positions = const_positions;
@@ -321,7 +306,8 @@ std::vector<array> Scan::vjp(
     outs.insert(outs.end(), grads.begin() + num_sums + num_carry_, grads.end());
     return outs;
   };
-  auto [back_carry, back_ys] = scan(backward, back_init, back_xs, stream());
+  auto [back_carry, back_ys] =
+      scan(backward, back_init, back_xs, !reverse_, stream());
 
   std::vector<array> vjps;
   int next_sum = 0;
@@ -332,7 +318,7 @@ std::vector<array> Scan::vjp(
     } else if (i < first_x) {
       vjps.push_back(back_carry[i - num_consts_]);
     } else {
-      vjps.push_back(reverse_steps(back_ys[next_x++], stream()));
+      vjps.push_back(back_ys[next_x++]);
     }
   }
   return vjps;
@@ -385,7 +371,7 @@ std::pair<std::vector<array>, std::vector<int>> Scan::vmap(
     return mlx::core::vmap(
         f, in_axes, std::vector<int>(outputs_.size(), 0))(body_inputs);
   };
-  auto [carry, ys] = scan(body, init, xs, stream());
+  auto [carry, ys] = scan(body, init, xs, reverse_, stream());
 
   std::vector<int> out_axes(carry.size(), 0);
   out_axes.resize(carry.size() + ys.size(), 1);
@@ -427,6 +413,7 @@ std::pair<std::vector<array>, std::vector<array>> scan(
     const std::function<std::vector<array>(const std::vector<array>&)>& fun,
     const std::vector<array>& init,
     const std::vector<array>& xs,
+    bool reverse /* = false */,
     StreamOrDevice s /* = {} */) {
   int length = loop_length(xs);
   if (length == 0) {
@@ -502,6 +489,7 @@ std::pair<std::vector<array>, std::vector<array>> scan(
           num_consts,
           num_carry,
           length,
+          reverse,
           trace.fuse),
       std::move(node_inputs));
 

@@ -54,6 +54,7 @@ void Scan::eval_cpu(
   std::vector<array> node_inputs;
   try {
     for (int t = 0; t < length_; ++t) {
+      int row_index = step_row(t);
       for (size_t j = num_consts_ + num_carry_; j < inputs_.size(); ++j) {
         auto& x = inputs[j];
         Shape row_shape(x.shape().begin() + 1, x.shape().end());
@@ -65,7 +66,7 @@ void Scan::eval_cpu(
               Strides(x.strides().begin() + 1, x.strides().end()),
               x.flags(),
               row.size(),
-              t * x.strides(0));
+              row_index * x.strides(0));
         } else {
           row.set_data(allocator::malloc(row.nbytes()));
           auto [data_shape, row_strides] = row_layout(row);
@@ -79,7 +80,7 @@ void Scan::eval_cpu(
               /* data_shape = */ data_shape,
               /* i_strides = */ x_row_strides,
               /* o_strides = */ row_strides,
-              /* i_offset = */ t * x.strides(0),
+              /* i_offset = */ row_index * x.strides(0),
               /* o_offset = */ 0,
               CopyType::GeneralGeneral,
               s);
@@ -135,7 +136,7 @@ void Scan::eval_cpu(
             /* i_strides = */ y_strides,
             /* o_strides = */ out_strides,
             /* i_offset = */ 0,
-            /* o_offset = */ t * static_cast<int64_t>(y.size()),
+            /* o_offset = */ row_index * static_cast<int64_t>(y.size()),
             CopyType::GeneralGeneral,
             s);
       }
