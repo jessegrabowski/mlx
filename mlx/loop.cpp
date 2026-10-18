@@ -159,14 +159,6 @@ array sum_stacked_products(const array& a, const array& b, StreamOrDevice s) {
   return matmul(a_rows, b_rows, s);
 }
 
-bool is_stop_gradient(const array& a) {
-  if (!a.has_primitive()) {
-    return false;
-  }
-  auto& p = a.primitive();
-  return typeid(p) == typeid(StopGradient);
-}
-
 } // namespace
 
 Scan::Scan(
@@ -213,12 +205,15 @@ std::vector<bool> Scan::stopped_outputs(
     });
     int i = in - inputs_.begin();
     if (in == inputs_.end()) {
-      stopped.push_back(is_stop_gradient(out));
+      stopped.push_back(
+          out.has_primitive() && is_stop_gradient(out.primitive()));
     } else if (i < num_consts_) {
       bool selected =
           std::find(const_positions.begin(), const_positions.end(), i) !=
           const_positions.end();
-      stopped.push_back(!selected && is_stop_gradient(primals[i]));
+      stopped.push_back(
+          !selected && primals[i].has_primitive() &&
+          is_stop_gradient(primals[i].primitive()));
     } else {
       stopped.push_back(false);
     }

@@ -15,6 +15,8 @@ bool is_unary(const Primitive& p);
 bool is_binary(const Primitive& p);
 bool is_ternary(const Primitive& p);
 
+bool is_stop_gradient(const Primitive& p);
+
 } // namespace mlx::core
 
 namespace mlx::core::detail {
