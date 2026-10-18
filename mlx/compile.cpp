@@ -1190,7 +1190,7 @@ LoopBodyTrace compile_loop_body(
   all_inputs.insert(all_inputs.end(), consts.begin(), consts.end());
   std::vector<array> unused_originals;
   unused_originals.reserve(all_inputs.size());
-  for (size_t i = 0; i < all_inputs.size(); ++i) {
+  for (int i = 0; i < all_inputs.size(); ++i) {
     unused_originals.push_back(array(Shape{}, bool_, nullptr, {}));
   }
 
@@ -1293,18 +1293,18 @@ LoopBodySplit compile_split_loop_body(
     forward.insert(r.id());
   }
   auto is_forward = [&](const array& a) {
-    if (forward.count(a.id())) {
+    if (forward.find(a.id()) != forward.end()) {
       return true;
     }
     for (auto& s : a.siblings()) {
-      if (forward.count(s.id())) {
+      if (forward.find(s.id()) != forward.end()) {
         return true;
       }
     }
     return false;
   };
   for (auto it = trace.tape.rbegin(); it != trace.tape.rend(); ++it) {
-    if (leaves.count(it->id()) || !is_forward(*it)) {
+    if (leaves.find(it->id()) != leaves.end() || !is_forward(*it)) {
       continue;
     }
     forward.insert(it->id());
@@ -1319,16 +1319,17 @@ LoopBodySplit compile_split_loop_body(
   LoopBodySplit split;
   std::unordered_set<std::uintptr_t> residual_ids;
   auto add_residual = [&](const array& a) {
-    if (!leaves.count(a.id()) && forward.count(a.id()) &&
+    if (leaves.find(a.id()) == leaves.end() &&
+        forward.find(a.id()) != forward.end() &&
         residual_ids.insert(a.id()).second) {
       split.residuals.push_back(a);
     }
   };
   for (auto& a : trace.tape) {
-    if (leaves.count(a.id())) {
+    if (leaves.find(a.id()) != leaves.end()) {
       continue;
     }
-    if (forward.count(a.id())) {
+    if (forward.find(a.id()) != forward.end()) {
       split.forward_tape.push_back(a);
       continue;
     }

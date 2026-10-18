@@ -79,8 +79,9 @@ bool backward_reads_any(
   for (auto& out : backward_outputs) {
     reads.insert(out.id());
   }
-  return std::any_of(
-      begin, end, [&reads](const array& a) { return reads.count(a.id()); });
+  return std::any_of(begin, end, [&reads](const array& a) {
+    return reads.find(a.id()) != reads.end();
+  });
 }
 
 // The terms of `a` that mlx vjp adds up, for example when a const is read
@@ -189,7 +190,7 @@ std::vector<array> Scan::replay_at(
     std::vector<array> args,
     const std::vector<int>& positions,
     const std::vector<array>& values) const {
-  for (size_t k = 0; k < values.size(); ++k) {
+  for (int k = 0; k < values.size(); ++k) {
     args[positions[k]] = values[k];
   }
   return replay(args);
@@ -239,7 +240,7 @@ std::vector<array> Scan::jvp(
   std::vector<array> xs(primals.begin() + first_x, primals.end());
   std::vector<std::optional<array>> const_tangents(num_consts_);
   std::vector<int> tangent_xs;
-  for (size_t k = 0; k < argnums.size(); ++k) {
+  for (int k = 0; k < argnums.size(); ++k) {
     int i = argnums[k];
     if (i < num_consts_) {
       const_tangents[i] = tangents[k];
@@ -275,7 +276,7 @@ std::vector<array> Scan::jvp(
     for (int j = 0; j < num_xs; ++j) {
       inputs[first_x + j] = args[2 * num_carry_ + j];
     }
-    for (size_t k = 0; k < tangent_xs.size(); ++k) {
+    for (int k = 0; k < tangent_xs.size(); ++k) {
       int j = tangent_xs[k];
       differentiate(
           first_x + j,
@@ -352,7 +353,7 @@ std::vector<array> Scan::vjp(
   for (auto& x : xs) {
     step_specs.push_back(row_placeholder(x));
   }
-  for (size_t k = num_carry_; k < cotangents.size(); ++k) {
+  for (int k = num_carry_; k < cotangents.size(); ++k) {
     step_specs.push_back(row_placeholder(cotangents[k]));
   }
 
@@ -380,7 +381,7 @@ std::vector<array> Scan::vjp(
         body_cotangents.push_back(args[c]);
       }
     }
-    for (size_t k = num_carry_; k < outputs_.size(); ++k) {
+    for (int k = num_carry_; k < outputs_.size(); ++k) {
       if (!stopped[k]) {
         body_cotangents.push_back(args[y_cotangent_at + k - num_carry_]);
       }
@@ -556,7 +557,7 @@ std::pair<std::vector<array>, std::vector<int>> Scan::vmap(
   // a step slice is batched at axis 0. An unbatched init is broadcast, because
   // a carry keeps its shape and a batched input can reach any carry.
   int batch_size = 0;
-  for (size_t i = 0; i < inputs.size(); ++i) {
+  for (int i = 0; i < inputs.size(); ++i) {
     if (axes[i] >= 0) {
       batch_size = inputs[i].shape(axes[i]);
     }
@@ -573,7 +574,7 @@ std::pair<std::vector<array>, std::vector<int>> Scan::vmap(
     }
   }
   std::vector<array> xs;
-  for (size_t i = first_x; i < inputs.size(); ++i) {
+  for (int i = first_x; i < inputs.size(); ++i) {
     xs.push_back(
         axes[i] >= 0 ? moveaxis(inputs[i], axes[i], 1, stream()) : inputs[i]);
   }
@@ -588,7 +589,7 @@ std::pair<std::vector<array>, std::vector<int>> Scan::vmap(
       body_inputs.push_back(args[i]);
       in_axes.push_back(0);
     }
-    for (size_t j = 0; j < xs.size(); ++j) {
+    for (int j = 0; j < xs.size(); ++j) {
       body_inputs.push_back(args[num_carry_ + j]);
       in_axes.push_back(axes[first_x + j] >= 0 ? 0 : -1);
     }
@@ -607,8 +608,8 @@ std::pair<std::vector<array>, std::vector<int>> Scan::vmap(
 std::vector<Shape> Scan::output_shapes(const std::vector<array>& inputs) {
   // The body is traced at fixed shapes, so a shapeless compile can reuse a
   // scan only at the traced shapes
-  size_t first_x = num_consts_ + num_carry_;
-  for (size_t i = 0; i < inputs.size(); ++i) {
+  int first_x = num_consts_ + num_carry_;
+  for (int i = 0; i < inputs.size(); ++i) {
     auto traced = i < first_x ? inputs_[i].shape()
                               : stacked_shape(inputs_[i].shape(), length_);
     if (inputs[i].shape() != traced) {
@@ -620,7 +621,7 @@ std::vector<Shape> Scan::output_shapes(const std::vector<array>& inputs) {
   for (int i = 0; i < num_carry_; ++i) {
     shapes.push_back(outputs_[i].shape());
   }
-  for (size_t i = num_carry_; i < outputs_.size(); ++i) {
+  for (int i = num_carry_; i < outputs_.size(); ++i) {
     shapes.push_back(stacked_shape(outputs_[i].shape(), length_));
   }
   return shapes;
@@ -686,7 +687,7 @@ std::pair<std::vector<array>, std::vector<array>> scan(
     shapes.push_back(c.shape());
     dtypes.push_back(c.dtype());
   }
-  for (size_t i = num_carry; i < trace.outputs.size(); ++i) {
+  for (int i = num_carry; i < trace.outputs.size(); ++i) {
     auto& y = trace.outputs[i];
     shapes.push_back(stacked_shape(y.shape(), length));
     dtypes.push_back(y.dtype());
