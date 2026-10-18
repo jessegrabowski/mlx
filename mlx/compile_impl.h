@@ -112,6 +112,21 @@ Scan::FusedBody compile_fuse_loop_body(
     const std::vector<array>& outputs,
     bool fuse);
 
+struct LoopBodySplit {
+  std::vector<array> forward_tape;
+  std::vector<array> backward_tape;
+  // Forward nodes that the backward part reads. Inputs and consts are not
+  // residuals, because both parts can read them.
+  std::vector<array> residuals;
+};
+
+// Split a loop body tape in two. The forward part is every node that `roots`
+// depend on, and the backward part is the rest.
+LoopBodySplit compile_split_loop_body(
+    const LoopBodyTrace& trace,
+    const std::vector<array>& roots,
+    const std::vector<array>& backward_outputs);
+
 // Check that the traced body returns one output per carry with an unchanged
 // shape and dtype
 void compile_validate_loop_carry(const LoopBodyTrace& trace, int num_carry);

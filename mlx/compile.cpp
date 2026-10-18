@@ -1274,6 +1274,75 @@ Scan::FusedBody compile_fuse_loop_body(
       std::move(fused_inputs), std::move(fused_tape), std::move(fused_outputs)};
 }
 
+LoopBodySplit compile_split_loop_body(
+    const LoopBodyTrace& trace,
+    const std::vector<array>& roots,
+    const std::vector<array>& backward_outputs) {
+  std::unordered_set<std::uintptr_t> leaves;
+  for (auto& a : trace.inputs) {
+    leaves.insert(a.id());
+  }
+  for (auto& a : trace.consts) {
+    leaves.insert(a.id());
+  }
+
+  // The tape is in topological order, so one walk from the end marks every
+  // node that the roots depend on
+  std::unordered_set<std::uintptr_t> forward;
+  for (auto& r : roots) {
+    forward.insert(r.id());
+  }
+  auto is_forward = [&](const array& a) {
+    if (forward.count(a.id())) {
+      return true;
+    }
+    for (auto& s : a.siblings()) {
+      if (forward.count(s.id())) {
+        return true;
+      }
+    }
+    return false;
+  };
+  for (auto it = trace.tape.rbegin(); it != trace.tape.rend(); ++it) {
+    if (leaves.count(it->id()) || !is_forward(*it)) {
+      continue;
+    }
+    forward.insert(it->id());
+    for (auto& s : it->siblings()) {
+      forward.insert(s.id());
+    }
+    for (auto& in : it->inputs()) {
+      forward.insert(in.id());
+    }
+  }
+
+  LoopBodySplit split;
+  std::unordered_set<std::uintptr_t> residual_ids;
+  auto add_residual = [&](const array& a) {
+    if (!leaves.count(a.id()) && forward.count(a.id()) &&
+        residual_ids.insert(a.id()).second) {
+      split.residuals.push_back(a);
+    }
+  };
+  for (auto& a : trace.tape) {
+    if (leaves.count(a.id())) {
+      continue;
+    }
+    if (forward.count(a.id())) {
+      split.forward_tape.push_back(a);
+      continue;
+    }
+    split.backward_tape.push_back(a);
+    for (auto& in : a.inputs()) {
+      add_residual(in);
+    }
+  }
+  for (auto& out : backward_outputs) {
+    add_residual(out);
+  }
+  return split;
+}
+
 void compile_validate_loop_carry(const LoopBodyTrace& trace, int num_carry) {
   assert(num_carry >= 0 && num_carry <= trace.inputs.size());
   if (trace.outputs.size() < num_carry) {
