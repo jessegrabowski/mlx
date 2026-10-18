@@ -155,7 +155,7 @@ void run_loop(
 void Scan::eval_cpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  auto s = stream();
+  auto& s = stream();
   auto& encoder = cpu::get_command_encoder(s);
 
   for (auto& out : outputs) {

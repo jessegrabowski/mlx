@@ -290,13 +290,13 @@ size_t scan_single_kernel_dispatches() {
 void Scan::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  auto s = stream();
-  auto& encoder = metal::get_command_encoder(s);
+  auto& s = stream();
+  auto& compute_encoder = metal::get_command_encoder(s);
 
   // Metal does not retain buffers, so keep them until the command buffer
   // completes
   auto retain = [&](std::vector<array> keep) {
-    encoder.get_command_buffer()->addCompletedHandler(
+    compute_encoder.get_command_buffer()->addCompletedHandler(
         [keep = std::move(keep)](MTL::CommandBuffer*) {});
   };
 
@@ -323,7 +323,7 @@ void Scan::eval_gpu(
         num_carry_,
         reverse_);
     auto kernel_name =
-        "scan_loop_" + std::to_string(std::hash<std::string>{}(source));
+        fmt::format("scan_loop_{:x}", std::hash<std::string>{}(source));
     for (auto pos = source.find(token); pos != std::string::npos;
          pos = source.find(token, pos)) {
       source.replace(pos, token.size(), kernel_name);
@@ -354,24 +354,24 @@ void Scan::eval_gpu(
       return kernel;
     });
     auto kernel = d.get_kernel(kernel_name, lib);
-    encoder.set_compute_pipeline_state(kernel);
+    compute_encoder.set_compute_pipeline_state(kernel);
 
     int cnt = 0;
     for (auto& in : bound) {
-      encoder.set_input_array(in, cnt++);
+      compute_encoder.set_input_array(in, cnt++);
     }
     for (auto& out : outputs) {
-      encoder.set_output_array(out, cnt++);
+      compute_encoder.set_output_array(out, cnt++);
     }
     uint32_t length = length_;
     uint32_t elems = plan->elems;
-    encoder.set_bytes(length, cnt++);
-    encoder.set_bytes(elems, cnt++);
+    compute_encoder.set_bytes(length, cnt++);
+    compute_encoder.set_bytes(elems, cnt++);
     size_t group =
         std::min<size_t>(plan->elems, kernel->maxTotalThreadsPerThreadgroup());
-    encoder.dispatch_threads(
+    compute_encoder.dispatch_threads(
         MTL::Size(plan->elems, 1, 1), MTL::Size(group, 1, 1));
-    encoder.add_temporaries(std::move(copies));
+    compute_encoder.add_temporaries(std::move(copies));
     single_kernel_dispatches++;
     return;
   }
@@ -532,10 +532,10 @@ void Scan::eval_gpu(
       }
 
       // Commit during the scan, so the GPU starts before encoding ends
-      if (encoder.needs_commit()) {
-        encoder.end_encoding();
+      if (compute_encoder.needs_commit()) {
+        compute_encoder.end_encoding();
         scheduler::notify_new_task(s);
-        encoder.commit([s]() { scheduler::notify_task_completion(s); });
+        compute_encoder.commit([s]() { scheduler::notify_task_completion(s); });
       }
     }
 
