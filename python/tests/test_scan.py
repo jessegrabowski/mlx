@@ -1,5 +1,7 @@
 # Copyright © 2026 Apple Inc.
 
+import unittest
+
 import mlx.core as mx
 import mlx_tests
 from mlx.utils import tree_flatten, tree_map
@@ -515,6 +517,62 @@ class TestScan(mlx_tests.MLXTestCase):
             actual = mx.grad(lambda h: f(mx.scan, h))(h)
             self.assertEqual(actual.dtype, mx.float16)
             self.assertTrue(mx.allclose(actual, expected, atol=1e-2))
+
+    def test_vjp_through_checkpoint(self):
+        # The checkpoint takes W as an input, because it differentiates only
+        # its inputs
+        cell = mx.checkpoint(lambda c, x, W: mx.tanh(c @ W + x))
+        keys = mx.random.split(mx.random.key(31), 3)
+        primals = [
+            mx.random.normal((3,), key=keys[0]),
+            mx.random.normal((5, 3), key=keys[1]),
+            0.5 * mx.random.normal((3, 3), key=keys[2]),
+        ]
+        for reverse in (False, True):
+
+            def model(scan, init, xs, W):
+                def body(c, x):
+                    c = cell(c, x, W)
+                    return c, c * x
+
+                return scan(body, init, xs, reverse=reverse)
+
+            self.assert_vjp_matches_unrolled(model, primals)
+
+    @unittest.skipUnless(mx.is_available(mx.gpu), "needs a gpu")
+    def test_grad_stores_residuals_and_checkpoint_stores_less(self):
+        # Each tanh vjp reads its input, so the plain body stores ten stacked
+        # residuals. The checkpoint stores its outputs and recomputes the rest.
+        length, width = 200, 1 << 14
+        xs = 0.01 * mx.random.normal((length, width), key=mx.random.key(30))
+        h = mx.zeros(width)
+        mx.eval(xs, h)
+
+        def chain(c):
+            for _ in range(10):
+                c = mx.tanh(0.9 * c)
+            return c
+
+        def peak_in_stacks(body):
+            def loss(h):
+                carry, _ = mx.scan(lambda c, x: (body(c) + x, None), h, xs)
+                return carry.sum()
+
+            grad = mx.grad(loss)
+            mx.eval(grad(h))
+            mx.synchronize()
+            mx.reset_peak_memory()
+            baseline = mx.get_active_memory()
+            mx.eval(grad(h))
+            mx.synchronize()
+            return (mx.get_peak_memory() - baseline) / (length * width * 4)
+
+        with mx.stream(mx.gpu):
+            plain = peak_in_stacks(chain)
+            checkpointed = peak_in_stacks(mx.checkpoint(chain))
+        self.assertGreater(plain, 9)
+        self.assertLess(plain, 12)
+        self.assertLess(checkpointed, 5)
 
     def test_grad_of_grad(self):
         xs = mx.random.normal((5, 3), key=mx.random.key(19))

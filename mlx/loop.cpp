@@ -58,6 +58,31 @@ Shape stacked_shape(Shape row, int length) {
   return row;
 }
 
+// A placeholder shaped like one row of the stacked array `a`
+array row_placeholder(const array& a) {
+  return array(
+      Shape(a.shape().begin() + 1, a.shape().end()), a.dtype(), nullptr, {});
+}
+
+// Whether the backward part of `split` reads an array in [begin, end)
+bool backward_reads_any(
+    const detail::LoopBodySplit& split,
+    const std::vector<array>& backward_outputs,
+    std::vector<array>::const_iterator begin,
+    std::vector<array>::const_iterator end) {
+  std::unordered_set<std::uintptr_t> reads;
+  for (auto& a : split.backward_tape) {
+    for (auto& in : a.inputs()) {
+      reads.insert(in.id());
+    }
+  }
+  for (auto& out : backward_outputs) {
+    reads.insert(out.id());
+  }
+  return std::any_of(
+      begin, end, [&reads](const array& a) { return reads.count(a.id()); });
+}
+
 bool is_stop_gradient(const array& a) {
   if (!a.has_primitive()) {
     return false;
@@ -206,27 +231,15 @@ std::vector<array> Scan::vjp(
     const std::vector<array>& cotangents,
     const std::vector<int>& argnums,
     const std::vector<array>&) {
-  // A forward scan stacks the carry that enters each step. A backward scan
-  // runs the steps in the opposite order. It carries the carry cotangents and
-  // one sum per selected const, and its ys are the x cotangents.
+  // One vjp step is traced once and split. A forward scan runs the forward
+  // part and stacks the residuals. A backward scan runs the backward part in
+  // the opposite order. It carries the carry cotangents and one sum per
+  // selected const, and its ys are the x cotangents.
   int first_x = num_consts_ + num_carry_;
   int num_xs = primals.size() - first_x;
   std::vector<array> init(
       primals.begin() + num_consts_, primals.begin() + first_x);
   std::vector<array> xs(primals.begin() + first_x, primals.end());
-
-  std::vector<array> step_carries;
-  if (num_carry_ > 0) {
-    auto forward = [&](const std::vector<array>& args) {
-      auto inputs = primals;
-      std::copy(args.begin(), args.end(), inputs.begin() + num_consts_);
-      auto outs = replay(inputs);
-      outs.erase(outs.begin() + num_carry_, outs.end());
-      outs.insert(outs.end(), args.begin(), args.begin() + num_carry_);
-      return outs;
-    };
-    step_carries = scan(forward, init, xs, reverse_, stream()).second;
-  }
 
   std::vector<int> const_positions;
   std::vector<int> x_positions;
@@ -238,20 +251,6 @@ std::vector<array> Scan::vjp(
     }
   }
 
-  // A carry cotangent must keep the dtype of its carry
-  std::vector<array> back_init;
-  for (int c = 0; c < num_carry_; ++c) {
-    back_init.push_back(
-        astype(cotangents[c], primals[num_consts_ + c].dtype(), stream()));
-  }
-  for (int i : const_positions) {
-    back_init.push_back(zeros_like(primals[i], stream()));
-  }
-  auto back_xs = step_carries;
-  back_xs.insert(back_xs.end(), xs.begin(), xs.end());
-  back_xs.insert(
-      back_xs.end(), cotangents.begin() + num_carry_, cotangents.end());
-
   auto stopped = stopped_outputs(primals, const_positions);
   std::vector<int> positions = const_positions;
   for (int i = num_consts_; i < first_x; ++i) {
@@ -259,12 +258,36 @@ std::vector<array> Scan::vjp(
   }
   positions.insert(positions.end(), x_positions.begin(), x_positions.end());
 
-  // The backward args are [carry_cotangent..., sum..., carry..., x...,
+  // The step args are [carry_cotangent..., sum..., carry..., x...,
   // y_cotangent...]
   int num_sums = const_positions.size();
   int carry_at = num_carry_ + num_sums;
-  int y_cotangent_at = carry_at + num_carry_ + num_xs;
-  auto backward = [&](const std::vector<array>& args) {
+  int x_at = carry_at + num_carry_;
+  int y_cotangent_at = x_at + num_xs;
+  std::vector<array> step_specs;
+  auto add_spec = [&step_specs](const array& a) {
+    step_specs.push_back(array(a.shape(), a.dtype(), nullptr, {}));
+  };
+  // A carry cotangent has the shape and dtype of its carry
+  for (auto& c : init) {
+    add_spec(c);
+  }
+  for (int i : const_positions) {
+    add_spec(primals[i]);
+  }
+  for (auto& c : init) {
+    add_spec(c);
+  }
+  for (auto& x : xs) {
+    step_specs.push_back(row_placeholder(x));
+  }
+  for (size_t k = num_carry_; k < cotangents.size(); ++k) {
+    step_specs.push_back(row_placeholder(cotangents[k]));
+  }
+
+  // The step returns [next_carry..., carry_cotangent..., sum...,
+  // x_cotangent...]
+  auto step = [&](const std::vector<array>& args) {
     auto inputs = primals;
     std::copy(
         args.begin() + carry_at,
@@ -289,10 +312,10 @@ std::vector<array> Scan::vjp(
     auto f = [&](const std::vector<array>& values) {
       return replay_at(inputs, positions, values);
     };
-    auto grads = mlx::core::vjp(f, body_primals, body_cotangents).second;
+    auto [body_outs, grads] = mlx::core::vjp(f, body_primals, body_cotangents);
 
     // Carries must keep their dtype, so cast each cotangent to its primal
-    std::vector<array> outs;
+    std::vector<array> outs(body_outs.begin(), body_outs.begin() + num_carry_);
     for (int c = 0; c < num_carry_; ++c) {
       outs.push_back(astype(
           grads[num_sums + c], primals[num_consts_ + c].dtype(), stream()));
@@ -305,6 +328,102 @@ std::vector<array> Scan::vjp(
     }
     outs.insert(outs.end(), grads.begin() + num_sums + num_carry_, grads.end());
     return outs;
+  };
+  detail::LoopBodyTrace trace;
+  {
+    StreamContext step_stream(stream());
+    trace = detail::compile_loop_body(step, step_specs);
+  }
+  std::vector<array> next_carry(
+      trace.outputs.begin(), trace.outputs.begin() + num_carry_);
+  std::vector<array> back_outputs(
+      trace.outputs.begin() + num_carry_, trace.outputs.end());
+  auto split = detail::compile_split_loop_body(trace, next_carry, back_outputs);
+
+  // The backward part reads a carry or an x only if a vjp rule needs it
+  auto step_input = [&trace](int i) { return trace.inputs.cbegin() + i; };
+  bool back_reads_carry = backward_reads_any(
+      split, back_outputs, step_input(carry_at), step_input(x_at));
+  // The xs also set the backward length when nothing else is scanned
+  int num_residuals = split.residuals.size();
+  bool back_scans_xs =
+      backward_reads_any(
+          split, back_outputs, step_input(x_at), step_input(y_cotangent_at)) ||
+      (num_residuals == 0 && !back_reads_carry &&
+       cotangents.size() == num_carry_);
+
+  // Leaves are [const..., step arg...]
+  auto leaves = trace.consts;
+  leaves.insert(leaves.end(), trace.inputs.begin(), trace.inputs.end());
+  auto bind = [&](const std::vector<array>& step_args) {
+    auto bound = trace.consts;
+    bound.insert(bound.end(), step_args.begin(), step_args.end());
+    return bound;
+  };
+
+  std::vector<array> stacked_residuals;
+  std::vector<array> stacked_carries;
+  if (num_residuals > 0 || back_reads_carry) {
+    // The cotangent args are not read by the forward part
+    auto forward = [&](const std::vector<array>& args) {
+      auto step_args = trace.inputs;
+      std::copy(args.begin(), args.end(), step_args.begin() + carry_at);
+      auto outs = next_carry;
+      outs.insert(outs.end(), split.residuals.begin(), split.residuals.end());
+      outs = detail::compile_replace_loop_body(
+          leaves, split.forward_tape, outs, bind(step_args));
+      if (back_reads_carry) {
+        outs.insert(outs.end(), args.begin(), args.begin() + num_carry_);
+      }
+      return outs;
+    };
+    auto ys = scan(forward, init, xs, reverse_, stream()).second;
+    stacked_residuals.assign(ys.begin(), ys.begin() + num_residuals);
+    stacked_carries.assign(ys.begin() + num_residuals, ys.end());
+  }
+
+  // A carry cotangent must keep the dtype of its carry
+  std::vector<array> back_init;
+  for (int c = 0; c < num_carry_; ++c) {
+    back_init.push_back(
+        astype(cotangents[c], primals[num_consts_ + c].dtype(), stream()));
+  }
+  for (int i : const_positions) {
+    back_init.push_back(zeros_like(primals[i], stream()));
+  }
+  auto back_xs = stacked_residuals;
+  back_xs.insert(back_xs.end(), stacked_carries.begin(), stacked_carries.end());
+  if (back_scans_xs) {
+    back_xs.insert(back_xs.end(), xs.begin(), xs.end());
+  }
+  back_xs.insert(
+      back_xs.end(), cotangents.begin() + num_carry_, cotangents.end());
+
+  // The backward args are [carry_cotangent..., sum..., residual...,
+  // carry..., x..., y_cotangent...], where the carries and xs are present
+  // only when they are scanned
+  auto back_leaves = leaves;
+  back_leaves.insert(
+      back_leaves.end(), split.residuals.begin(), split.residuals.end());
+  auto backward = [&](const std::vector<array>& args) {
+    auto step_args = trace.inputs;
+    auto next = args.begin() + carry_at;
+    std::copy(args.begin(), next, step_args.begin());
+    std::vector<array> residuals(next, next + num_residuals);
+    next += num_residuals;
+    if (back_reads_carry) {
+      std::copy(next, next + num_carry_, step_args.begin() + carry_at);
+      next += num_carry_;
+    }
+    if (back_scans_xs) {
+      std::copy(next, next + num_xs, step_args.begin() + x_at);
+      next += num_xs;
+    }
+    std::copy(next, args.end(), step_args.begin() + y_cotangent_at);
+    auto bound = bind(step_args);
+    bound.insert(bound.end(), residuals.begin(), residuals.end());
+    return detail::compile_replace_loop_body(
+        back_leaves, split.backward_tape, back_outputs, bound);
   };
   auto [back_carry, back_ys] =
       scan(backward, back_init, back_xs, !reverse_, stream());
@@ -422,9 +541,7 @@ std::pair<std::vector<array>, std::vector<array>> scan(
 
   auto input_specs = init;
   for (auto& x : xs) {
-    Shape slice_shape(x.shape().begin() + 1, x.shape().end());
-    input_specs.push_back(
-        array(std::move(slice_shape), x.dtype(), nullptr, {}));
+    input_specs.push_back(row_placeholder(x));
   }
 
   // Trace on the scan stream, so the replay runs the body there
