@@ -162,6 +162,47 @@ class TestScan(mlx_tests.MLXTestCase):
             with self.assertRaisesRegex(ValueError, "Shapeless compile"):
                 compiled(*args)
 
+    def test_shapeless_compile_of_vmap(self):
+        # A shapeless compile cannot trace a lazy captured random array
+        W = 0.3 * mx.random.normal((3, 3), key=mx.random.key(28))
+        mx.eval(W)
+
+        def fun(init, xs):
+            return mx.scan(lambda c, x: (mx.tanh(c @ W + x), c), init, xs)
+
+        batched = mx.vmap(fun)
+        compiled = mx.compile(batched, shapeless=True)
+        args = (mx.ones((2, 3)), mx.random.normal((2, 4, 3), key=mx.random.key(29)))
+        for a, e in zip(leaves(compiled(*args)), leaves(batched(*args))):
+            self.assertEqual(a.shape, e.shape)
+            self.assertTrue(mx.allclose(a, e, atol=1e-6))
+
+        # A new batch size changes the shape of the scan inputs
+        with self.assertRaisesRegex(ValueError, "Shapeless compile"):
+            compiled(mx.ones((3, 3)), mx.ones((3, 4, 3)))
+
+    def test_shapeless_compile_of_grad(self):
+        W = 0.3 * mx.random.normal((3, 3), key=mx.random.key(25))
+        xs = mx.random.normal((4, 3), key=mx.random.key(26))
+        for reverse in (False, True):
+
+            def loss(init, xs, W):
+                carry, ys = mx.scan(
+                    lambda c, x: (mx.tanh(c @ W + x), c * x),
+                    init,
+                    xs,
+                    reverse=reverse,
+                )
+                return carry.sum() + ys.sum()
+
+            for transform in (mx.grad, mx.value_and_grad):
+                f = transform(loss, argnums=(0, 1, 2))
+                expected = leaves(f(mx.ones(3), xs, W))
+                actual = leaves(mx.compile(f, shapeless=True)(mx.ones(3), xs, W))
+                for a, e in zip(actual, expected):
+                    self.assertEqual(a.shape, e.shape)
+                    self.assertTrue(mx.allclose(a, e, atol=1e-5))
+
     def test_streams(self):
         devices = [mx.cpu]
         if mx.is_available(mx.gpu):
