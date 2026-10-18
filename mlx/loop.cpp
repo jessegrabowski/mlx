@@ -83,6 +83,82 @@ bool backward_reads_any(
       begin, end, [&reads](const array& a) { return reads.count(a.id()); });
 }
 
+// The terms of `a` that mlx vjp adds up, for example when a const is read
+// more than once
+std::vector<array> additive_terms(const array& a) {
+  if (!a.has_primitive()) {
+    return {a};
+  }
+  auto& p = a.primitive();
+  if (typeid(p) != typeid(Add) || a.inputs()[0].shape() != a.shape() ||
+      a.inputs()[1].shape() != a.shape()) {
+    return {a};
+  }
+  auto terms = additive_terms(a.inputs()[0]);
+  auto right = additive_terms(a.inputs()[1]);
+  terms.insert(terms.end(), right.begin(), right.end());
+  return terms;
+}
+
+// The two factors of a matrix product of two matrices
+std::optional<std::pair<array, array>> matmul_factors(const array& a) {
+  if (!a.has_primitive()) {
+    return std::nullopt;
+  }
+  auto& p = a.primitive();
+  if (typeid(p) != typeid(Matmul) || a.inputs()[0].ndim() != 2 ||
+      a.inputs()[1].ndim() != 2) {
+    return std::nullopt;
+  }
+  return std::make_pair(a.inputs()[0], a.inputs()[1]);
+}
+
+// One step of a const cotangent: the carried sum, plus each product whose
+// factors are smaller than the product
+struct ConstCotangentStep {
+  array sum;
+  std::vector<std::pair<array, array>> stacked_products;
+  bool has_carried_terms = false;
+};
+
+ConstCotangentStep add_const_cotangent(
+    array sum,
+    const array& cotangent,
+    Dtype dtype,
+    StreamOrDevice s) {
+  ConstCotangentStep step{std::move(sum)};
+  for (auto& term : additive_terms(cotangent)) {
+    auto product = matmul_factors(term);
+    if (product) {
+      auto& [a, b] = *product;
+      int64_t m = a.shape(0);
+      int64_t inner = a.shape(1);
+      int64_t n = b.shape(1);
+      if (inner * (m + n) < m * n) {
+        step.stacked_products.push_back(*product);
+        continue;
+      }
+      if (term.dtype() == dtype) {
+        step.sum = addmm(step.sum, a, b, 1.0f, 1.0f, s);
+        step.has_carried_terms = true;
+        continue;
+      }
+    }
+    step.sum = add(step.sum, astype(term, dtype, s), s);
+    step.has_carried_terms = true;
+  }
+  return step;
+}
+
+// The sum over steps of A_t B_t: A stacked (L, m, inner) and B stacked
+// (L, inner, n) give one (m, L inner) by (L inner, n) matmul
+array sum_stacked_products(const array& a, const array& b, StreamOrDevice s) {
+  auto a_rows =
+      reshape(moveaxis(a, 0, 1, s), {a.shape(1), a.shape(0) * a.shape(2)}, s);
+  auto b_rows = reshape(b, {b.shape(0) * b.shape(1), b.shape(2)}, s);
+  return matmul(a_rows, b_rows, s);
+}
+
 bool is_stop_gradient(const array& a) {
   if (!a.has_primitive()) {
     return false;
@@ -285,8 +361,14 @@ std::vector<array> Scan::vjp(
     step_specs.push_back(row_placeholder(cotangents[k]));
   }
 
+  // A const cotangent term that is a product A_t B_t is not added to the
+  // carried sum when the factors are smaller than the product. Its factors
+  // are stacked, and one matmul after the scan sums the terms.
+  std::vector<std::vector<int>> stacked_terms(num_sums);
+  std::vector<bool> has_carried_terms(num_sums, false);
+
   // The step returns [next_carry..., carry_cotangent..., sum...,
-  // x_cotangent...]
+  // x_cotangent..., stacked_factor...]
   auto step = [&](const std::vector<array>& args) {
     auto inputs = primals;
     std::copy(
@@ -320,13 +402,24 @@ std::vector<array> Scan::vjp(
       outs.push_back(astype(
           grads[num_sums + c], primals[num_consts_ + c].dtype(), stream()));
     }
+    std::vector<array> factors;
+    int num_x_cotangents = grads.size() - num_sums - num_carry_;
     for (int k = 0; k < num_sums; ++k) {
-      outs.push_back(
-          add(args[num_carry_ + k],
-              astype(grads[k], primals[const_positions[k]].dtype(), stream()),
-              stream()));
+      auto const_step = add_const_cotangent(
+          args[num_carry_ + k],
+          grads[k],
+          primals[const_positions[k]].dtype(),
+          stream());
+      outs.push_back(const_step.sum);
+      has_carried_terms[k] = const_step.has_carried_terms;
+      for (auto& [a, b] : const_step.stacked_products) {
+        stacked_terms[k].push_back(num_x_cotangents + factors.size());
+        factors.push_back(a);
+        factors.push_back(b);
+      }
     }
     outs.insert(outs.end(), grads.begin() + num_sums + num_carry_, grads.end());
+    outs.insert(outs.end(), factors.begin(), factors.end());
     return outs;
   };
   detail::LoopBodyTrace trace;
@@ -428,12 +521,30 @@ std::vector<array> Scan::vjp(
   auto [back_carry, back_ys] =
       scan(backward, back_init, back_xs, !reverse_, stream());
 
+  // The cotangent of selected const k is its carried sum plus its stacked
+  // products, which ys at and at + 1 hold
+  auto const_cotangent = [&](int k) {
+    auto dtype = primals[const_positions[k]].dtype();
+    std::optional<array> total;
+    if (has_carried_terms[k] || stacked_terms[k].empty()) {
+      total = back_carry[num_carry_ + k];
+    }
+    for (int at : stacked_terms[k]) {
+      auto term = astype(
+          sum_stacked_products(back_ys[at], back_ys[at + 1], stream()),
+          dtype,
+          stream());
+      total = total ? add(*total, term, stream()) : term;
+    }
+    return *total;
+  };
+
   std::vector<array> vjps;
   int next_sum = 0;
   int next_x = 0;
   for (int i : argnums) {
     if (i < num_consts_) {
-      vjps.push_back(back_carry[num_carry_ + next_sum++]);
+      vjps.push_back(const_cotangent(next_sum++));
     } else if (i < first_x) {
       vjps.push_back(back_carry[i - num_consts_]);
     } else {

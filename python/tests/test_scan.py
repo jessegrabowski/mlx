@@ -518,6 +518,60 @@ class TestScan(mlx_tests.MLXTestCase):
             self.assertEqual(actual.dtype, mx.float16)
             self.assertTrue(mx.allclose(actual, expected, atol=1e-2))
 
+    def test_vjp_of_weight_cotangents(self):
+        # A weight cotangent that is a product of small factors is summed by
+        # one matmul after the scan. Others are added up step by step.
+        def weights(shape, seed):
+            return 0.3 * mx.random.normal(shape, key=mx.random.key(seed))
+
+        bodies = {
+            "W @ c": (lambda c, x, W: mx.tanh(W @ c + x), (3,), (5, 3), (3, 3)),
+            "c @ W": (lambda c, x, W: mx.tanh(c @ W + x), (3,), (5, 3), (3, 3)),
+            "W twice": (
+                lambda c, x, W: mx.tanh(W @ c + W @ x),
+                (3,),
+                (5, 3),
+                (3, 3),
+            ),
+            "batched, stacked": (
+                lambda c, x, W: mx.tanh(c @ W + x),
+                (4, 16),
+                (5, 4, 16),
+                (16, 16),
+            ),
+            "batched, carried": (
+                lambda c, x, W: mx.tanh(c @ W + x),
+                (4, 3),
+                (5, 4, 3),
+                (3, 3),
+            ),
+            # The elementwise use reads per-step data, so it stays in the scan
+            "matmul and elementwise": (
+                lambda c, x, W: mx.tanh(W @ c + (W * (c[:, None] * x)).sum(1)),
+                (3,),
+                (5, 3),
+                (3, 3),
+            ),
+        }
+        for seed, (name, spec) in enumerate(bodies.items()):
+            cell, init_shape, xs_shape, W_shape = spec
+            primals = [
+                weights(init_shape, 40 + seed),
+                weights(xs_shape, 50 + seed),
+                weights(W_shape, 60 + seed),
+            ]
+            for reverse in (False, True):
+
+                def model(scan, init, xs, W):
+                    def body(c, x):
+                        c = cell(c, x, W)
+                        return c, c * x
+
+                    return scan(body, init, xs, reverse=reverse)
+
+                with self.subTest(body=name, reverse=reverse):
+                    self.assert_vjp_matches_unrolled(model, primals)
+
     def test_vjp_through_checkpoint(self):
         # The checkpoint takes W as an input, because it differentiates only
         # its inputs
