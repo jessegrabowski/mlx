@@ -14,14 +14,6 @@ namespace mlx::core {
 
 namespace {
 
-// Shape/strides for a single row so the copy kernels never see a rank-0 view
-std::pair<Shape, Strides> row_layout(const array& row_like) {
-  if (row_like.ndim() == 0) {
-    return {Shape{1}, Strides{1}};
-  }
-  return {row_like.shape(), make_contiguous_strides(row_like.shape())};
-}
-
 struct LoopSizes {
   int num_consts;
   int num_carry;

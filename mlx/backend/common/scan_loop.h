@@ -2,9 +2,11 @@
 
 #pragma once
 
+#include <utility>
 #include <vector>
 
 #include "mlx/array.h"
+#include "mlx/backend/common/utils.h"
 
 namespace mlx::core {
 
@@ -36,5 +38,13 @@ ScanPlan make_scan_plan(
     const std::vector<array>& tape,
     const std::vector<array>& trace_outputs,
     int num_consts);
+
+// Shape/strides for a single row so the copy kernels never see a rank-0 view
+inline std::pair<Shape, Strides> row_layout(const array& row_like) {
+  if (row_like.ndim() == 0) {
+    return {Shape{1}, Strides{1}};
+  }
+  return {row_like.shape(), make_contiguous_strides(row_like.shape())};
+}
 
 } // namespace mlx::core

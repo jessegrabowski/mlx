@@ -27,14 +27,6 @@ namespace mlx::core {
 
 namespace {
 
-// Shape/strides for a single row so the copy kernels never see a rank-0 view
-std::pair<Shape, Strides> row_layout(const array& row_like) {
-  if (row_like.ndim() == 0) {
-    return {Shape{1}, Strides{1}};
-  }
-  return {row_like.shape(), make_contiguous_strides(row_like.shape())};
-}
-
 // Run a chain of elementwise nodes as one kernel, with the time loop in the
 // kernel and the carries in registers
 struct MegakernelPlan {
