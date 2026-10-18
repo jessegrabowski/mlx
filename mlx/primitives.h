@@ -2015,6 +2015,12 @@ class MLX_API Scan : public Primitive {
       const std::vector<int>& positions,
       const std::vector<array>& values) const;
 
+  // Mark the outputs that mlx::core::vjp skips, because their cotangents must
+  // not be passed. A selected const becomes a tracer, which is not skipped.
+  std::vector<bool> stopped_outputs(
+      const std::vector<array>& primals,
+      const std::vector<int>& const_positions) const;
+
   const std::vector<array> inputs_;
   const std::vector<array> outputs_;
   const std::vector<array> tape_;

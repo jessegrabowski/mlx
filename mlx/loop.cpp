@@ -1,5 +1,6 @@
 // Copyright © 2026 Apple Inc.
 
+#include <algorithm>
 #include <optional>
 #include <sstream>
 #include <unordered_set>
@@ -68,6 +69,14 @@ array reverse_steps(const array& a, StreamOrDevice s) {
   return slice(a, std::move(start), std::move(stop), std::move(strides), s);
 }
 
+bool is_stop_gradient(const array& a) {
+  if (!a.has_primitive()) {
+    return false;
+  }
+  auto& p = a.primitive();
+  return typeid(p) == typeid(StopGradient);
+}
+
 } // namespace
 
 Scan::Scan(
@@ -100,6 +109,29 @@ std::vector<array> Scan::replay_at(
     args[positions[k]] = values[k];
   }
   return replay(args);
+}
+
+std::vector<bool> Scan::stopped_outputs(
+    const std::vector<array>& primals,
+    const std::vector<int>& const_positions) const {
+  std::vector<bool> stopped;
+  for (auto& out : outputs_) {
+    auto in = std::find_if(inputs_.begin(), inputs_.end(), [&](auto& a) {
+      return a.id() == out.id();
+    });
+    int i = in - inputs_.begin();
+    if (in == inputs_.end()) {
+      stopped.push_back(is_stop_gradient(out));
+    } else if (i < num_consts_) {
+      bool selected =
+          std::find(const_positions.begin(), const_positions.end(), i) !=
+          const_positions.end();
+      stopped.push_back(!selected && is_stop_gradient(primals[i]));
+    } else {
+      stopped.push_back(false);
+    }
+  }
+  return stopped;
 }
 
 std::vector<array> Scan::jvp(
@@ -231,6 +263,7 @@ std::vector<array> Scan::vjp(
     back_xs.push_back(reverse_steps(cotangents[i], stream()));
   }
 
+  auto stopped = stopped_outputs(primals, const_positions);
   std::vector<int> positions = const_positions;
   for (int i = num_consts_; i < first_x; ++i) {
     positions.push_back(i);
@@ -252,9 +285,17 @@ std::vector<array> Scan::vjp(
     for (int i : positions) {
       body_primals.push_back(inputs[i]);
     }
-    std::vector<array> body_cotangents(args.begin(), args.begin() + num_carry_);
-    body_cotangents.insert(
-        body_cotangents.end(), args.begin() + y_cotangent_at, args.end());
+    std::vector<array> body_cotangents;
+    for (int c = 0; c < num_carry_; ++c) {
+      if (!stopped[c]) {
+        body_cotangents.push_back(args[c]);
+      }
+    }
+    for (size_t k = num_carry_; k < outputs_.size(); ++k) {
+      if (!stopped[k]) {
+        body_cotangents.push_back(args[y_cotangent_at + k - num_carry_]);
+      }
+    }
 
     auto f = [&](const std::vector<array>& values) {
       return replay_at(inputs, positions, values);

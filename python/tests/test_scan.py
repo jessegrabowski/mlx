@@ -370,6 +370,28 @@ class TestScan(mlx_tests.MLXTestCase):
         primals = [mx.ones(3), mx.random.normal((5, 3), key=mx.random.key(16)), W]
         self.assert_vjp_matches_unrolled(model, primals)
 
+    def test_stop_gradient_outputs(self):
+        W = mx.array([0.5, -1.0, 2.0])
+        stopped_W = mx.stop_gradient(2 * W)
+
+        def model(scan, init, xs, W):
+            def body(c, x):
+                y = (mx.stop_gradient(c * x), stopped_W, mx.sum(c), c * x * W)
+                return mx.stop_gradient(mx.sin(c) * W + x), y
+
+            return scan(body, init, xs)
+
+        def loss(scan_fn, *primals):
+            return sum(mx.sum(mx.sin(a)) for a in leaves(model(scan_fn, *primals)))
+
+        primals = [mx.ones(3), mx.random.normal((5, 3), key=mx.random.key(22)), W]
+        argnums = tuple(range(len(primals)))
+        expected = mx.grad(lambda *p: loss(unrolled, *p), argnums=argnums)(*primals)
+        actual = mx.grad(lambda *p: loss(mx.scan, *p), argnums=argnums)(*primals)
+        for a, e in zip(actual, expected):
+            self.assertTrue(mx.allclose(a, e, atol=1e-5))
+        self.assert_jvp_matches_unrolled(model, primals)
+
     def test_vjp_partial_xs_and_unused_inputs(self):
         def model(scan, keep, acc, a, b, unused):
             def body(c, x):
