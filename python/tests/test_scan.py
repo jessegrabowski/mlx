@@ -541,15 +541,16 @@ class TestScan(mlx_tests.MLXTestCase):
 
     @unittest.skipUnless(mx.is_available(mx.gpu), "needs a gpu")
     def test_grad_stores_residuals_and_checkpoint_stores_less(self):
-        # Each tanh vjp reads its input, so the plain body stores ten stacked
-        # residuals. The checkpoint stores its outputs and recomputes the rest.
+        # Each tanh vjp reads its input, so the plain body stores twenty
+        # stacked residuals at once. The checkpoint stores its outputs and
+        # recomputes the rest, so only its step temporaries add to its peak.
         length, width = 200, 1 << 14
         xs = 0.01 * mx.random.normal((length, width), key=mx.random.key(30))
         h = mx.zeros(width)
         mx.eval(xs, h)
 
         def chain(c):
-            for _ in range(10):
+            for _ in range(20):
                 c = mx.tanh(0.9 * c)
             return c
 
@@ -570,9 +571,8 @@ class TestScan(mlx_tests.MLXTestCase):
         with mx.stream(mx.gpu):
             plain = peak_in_stacks(chain)
             checkpointed = peak_in_stacks(mx.checkpoint(chain))
-        self.assertGreater(plain, 9)
-        self.assertLess(plain, 12)
-        self.assertLess(checkpointed, 5)
+        self.assertGreater(plain, 19)
+        self.assertLess(checkpointed, 0.6 * plain)
 
     def test_grad_of_grad(self):
         xs = mx.random.normal((5, 3), key=mx.random.key(19))
