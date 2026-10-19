@@ -519,8 +519,8 @@ class TestScan(mlx_tests.MLXTestCase):
             self.assertTrue(mx.allclose(actual, expected, atol=1e-2))
 
     def test_vjp_of_weight_cotangents(self):
-        # A weight cotangent that is a product of small factors is summed by
-        # one matmul after the scan. Others are added up step by step.
+        # A weight cotangent that is a matrix product goes through addmm.
+        # Other terms are added to the carried sum.
         def weights(shape, seed):
             return 0.3 * mx.random.normal(shape, key=mx.random.key(seed))
 
@@ -533,13 +533,13 @@ class TestScan(mlx_tests.MLXTestCase):
                 (5, 3),
                 (3, 3),
             ),
-            "batched, stacked": (
+            "batched": (
                 lambda c, x, W: mx.tanh(c @ W + x),
                 (4, 16),
                 (5, 4, 16),
                 (16, 16),
             ),
-            "batched, carried": (
+            "batched, small W": (
                 lambda c, x, W: mx.tanh(c @ W + x),
                 (4, 3),
                 (5, 4, 3),
@@ -571,6 +571,33 @@ class TestScan(mlx_tests.MLXTestCase):
 
                 with self.subTest(body=name, reverse=reverse):
                     self.assert_vjp_matches_unrolled(model, primals)
+
+    def test_vjp_of_weight_cotangent_wider_than_weight(self):
+        @mx.custom_function
+        def wide_matmul(c, W):
+            return c @ W
+
+        @wide_matmul.vjp
+        def wide_matmul_vjp(primals, cotangent, output):
+            c, W = primals
+            wide = cotangent.astype(mx.float32)
+            return (wide @ W.T).astype(c.dtype), c.T.astype(mx.float32) @ wide
+
+        xs = mx.random.normal((4, 2, 3), key=mx.random.key(110)).astype(mx.float16)
+        h = mx.ones((2, 3), dtype=mx.float16)
+
+        def loss(scan_fn, W):
+            def body(c, x):
+                return mx.tanh(wide_matmul(c, W) + x), None
+
+            carry, _ = scan_fn(body, h, xs)
+            return carry.astype(mx.float32).sum()
+
+        W = (0.3 * mx.random.normal((3, 3), key=mx.random.key(111))).astype(mx.float16)
+        expected = mx.grad(lambda W: loss(unrolled, W))(W)
+        actual = mx.grad(lambda W: loss(mx.scan, W))(W)
+        self.assertEqual(actual.dtype, mx.float16)
+        self.assertTrue(mx.allclose(actual, expected, atol=1e-2))
 
     def test_vjp_through_checkpoint(self):
         # The checkpoint takes W as an input, because it differentiates only
@@ -626,6 +653,42 @@ class TestScan(mlx_tests.MLXTestCase):
             checkpointed = peak_in_stacks(mx.checkpoint(chain))
         self.assertGreater(plain, 19)
         self.assertLess(checkpointed, 0.6 * plain)
+
+    def test_weight_grad_memory(self):
+        # The W cotangent is summed in the scan, so it adds at most the stacked
+        # carries that its addmm reads. The checkpointed body stores them.
+        length, batch, width = 200, 32, 256
+        xs = 0.1 * mx.random.normal((length, batch, width), key=mx.random.key(70))
+        h = mx.zeros((batch, width))
+        W = mx.random.normal((width, width), key=mx.random.key(71)) / width**0.5
+
+        def chain(c, x, W):
+            c = c @ W + x
+            for _ in range(8):
+                c = mx.tanh(c)
+            return c
+
+        def peak_in_stacks(cell, argnums):
+            def loss(h, W):
+                carry, _ = mx.scan(lambda c, x: (cell(c, x, W), None), h, xs)
+                return carry.sum()
+
+            grad = mx.grad(loss, argnums=argnums)
+            mx.eval(grad(h, W))
+            mx.synchronize()
+            mx.reset_peak_memory()
+            baseline = mx.get_active_memory()
+            mx.eval(grad(h, W))
+            mx.synchronize()
+            return (mx.get_peak_memory() - baseline) / (length * batch * width * 4)
+
+        with mx.stream(mx.cpu):
+            mx.eval(xs, h, W)
+            plain = peak_in_stacks(chain, (0, 1)) - peak_in_stacks(chain, 0)
+            remat = mx.checkpoint(chain)
+            checkpointed = peak_in_stacks(remat, (0, 1)) - peak_in_stacks(remat, 0)
+        self.assertLess(plain, 1.5)
+        self.assertLess(checkpointed, 0.5)
 
     def test_grad_of_grad(self):
         xs = mx.random.normal((5, 3), key=mx.random.key(19))
