@@ -599,6 +599,24 @@ class TestScan(mlx_tests.MLXTestCase):
         self.assertEqual(actual.dtype, mx.float16)
         self.assertTrue(mx.allclose(actual, expected, atol=1e-2))
 
+    def test_vjp_of_weight_in_ys(self):
+        primals = [
+            0.3 * mx.random.normal((2, 4), key=mx.random.key(80)),
+            0.3 * mx.random.normal((5, 2, 4), key=mx.random.key(90)),
+            0.3 * mx.random.normal((4, 64), key=mx.random.key(100)),
+        ]
+        for reverse in (False, True):
+
+            def model(scan, init, xs, W):
+                def body(c, x):
+                    c = mx.tanh(0.9 * c + x)
+                    return c, c @ W
+
+                return scan(body, init, xs, reverse=reverse)
+
+            with self.subTest(reverse=reverse):
+                self.assert_vjp_matches_unrolled(model, primals)
+
     def test_vjp_through_checkpoint(self):
         # The checkpoint takes W as an input, because it differentiates only
         # its inputs
